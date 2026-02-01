@@ -1,6 +1,7 @@
 import localForage from "localforage";
 import isEqual from "lodash-es/isEqual";
 import React, { Dispatch, SetStateAction, useEffect } from "react";
+import { View } from "src/components/List/views";
 import { ConfigImageLightboxInput } from "src/core/generated-graphql";
 
 interface IInterfaceQueryConfig {
@@ -9,11 +10,17 @@ interface IInterfaceQueryConfig {
   currentPage: number;
 }
 
+export interface IViewConfig {
+  showSidebar?: boolean;
+}
+
 type IQueryConfig = Record<string, IInterfaceQueryConfig>;
 
 interface IInterfaceConfig {
   queryConfig: IQueryConfig;
   imageLightbox: ConfigImageLightboxInput;
+  // Partial is required because using View makes the key mandatory
+  viewConfig: Partial<Record<View, IViewConfig>>;
 }
 
 export interface IChangelogConfig {
@@ -29,7 +36,7 @@ interface ILocalForage<T> {
 const Loading: Record<string, boolean> = {};
 const Cache: Record<string, {}> = {};
 
-export function useLocalForage<T>(
+export function useLocalForage<T extends {}>(
   key: string,
   defaultValue: T = {} as T
 ): [ILocalForage<T>, Dispatch<SetStateAction<T>>] {

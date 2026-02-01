@@ -2,6 +2,9 @@
 # Go
 ####
 
+# Vendored dependencies
+vendor
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -17,11 +20,14 @@
 
 # GraphQL generated output
 internal/api/generated_*.go
-ui/v2.5/src/core/generated-*.tsx
+
+# Generated locale files
+ui/login/locales/*
 
 ####
-# Jetbrains
+# Visual Studio
 ####
+/.vs
 
 # User-specific stuff
 .idea/**/workspace.xml
@@ -44,9 +50,6 @@ ui/v2.5/src/core/generated-*.tsx
 .idea/**/uiDesigner.xml
 .idea/**/dbnavigator.xml
 
-# Goland Junk
-pkg/pkg
-
 ####
 # Random
 ####
@@ -56,5 +59,8 @@ node_modules
 *.db
 
 /stash
+/Stash.app
+/phasher
 dist
 .DS_Store
+/.local*

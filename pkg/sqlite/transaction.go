@@ -17,6 +17,7 @@ type key int
 const (
 	txnKey key = iota + 1
 	dbKey
+	writableKey
 )
 
 func (db *Database) WithDatabase(ctx context.Context) (context.Context, error) {
@@ -25,10 +26,10 @@ func (db *Database) WithDatabase(ctx context.Context) (context.Context, error) {
 		return ctx, nil
 	}
 
-	return context.WithValue(ctx, dbKey, db.db), nil
+	return context.WithValue(ctx, dbKey, db.readDB), nil
 }
 
-func (db *Database) Begin(ctx context.Context) (context.Context, error) {
+func (db *Database) Begin(ctx context.Context, writable bool) (context.Context, error) {
 	if tx, _ := getTx(ctx); tx != nil {
 		// log the stack trace so we can see
 		logger.Error(string(debug.Stack()))
@@ -36,10 +37,17 @@ func (db *Database) Begin(ctx context.Context) (context.Context, error) {
 		return nil, fmt.Errorf("already in transaction")
 	}
 
-	tx, err := db.db.BeginTxx(ctx, nil)
+	dbtx := db.readDB
+	if writable {
+		dbtx = db.writeDB
+	}
+
+	tx, err := dbtx.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
+
+	ctx = context.WithValue(ctx, writableKey, writable)
 
 	return context.WithValue(ctx, txnKey, tx), nil
 }
@@ -49,6 +57,8 @@ func (db *Database) Commit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	defer db.txnComplete(ctx)
 
 	if err := tx.Commit(); err != nil {
 		return err
@@ -63,11 +73,16 @@ func (db *Database) Rollback(ctx context.Context) error {
 		return err
 	}
 
+	defer db.txnComplete(ctx)
+
 	if err := tx.Rollback(); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (db *Database) txnComplete(ctx context.Context) {
 }
 
 func getTx(ctx context.Context) (*sqlx.Tx, error) {
@@ -100,20 +115,21 @@ func (db *Database) IsLocked(err error) bool {
 	return false
 }
 
-func (db *Database) TxnRepository() models.Repository {
+func (db *Database) Repository() models.Repository {
 	return models.Repository{
-		TxnManager:  db,
-		File:        db.File,
-		Folder:      db.Folder,
-		Gallery:     db.Gallery,
-		Image:       db.Image,
-		Movie:       MovieReaderWriter,
-		Performer:   db.Performer,
-		Scene:       db.Scene,
-		SceneMarker: SceneMarkerReaderWriter,
-		ScrapedItem: ScrapedItemReaderWriter,
-		Studio:      StudioReaderWriter,
-		Tag:         TagReaderWriter,
-		SavedFilter: SavedFilterReaderWriter,
+		TxnManager:     db,
+		Blob:           db.Blobs,
+		File:           db.File,
+		Folder:         db.Folder,
+		Gallery:        db.Gallery,
+		GalleryChapter: db.GalleryChapter,
+		Image:          db.Image,
+		Group:          db.Group,
+		Performer:      db.Performer,
+		Scene:          db.Scene,
+		SceneMarker:    db.SceneMarker,
+		Studio:         db.Studio,
+		Tag:            db.Tag,
+		SavedFilter:    db.SavedFilter,
 	}
 }

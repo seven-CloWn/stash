@@ -12,7 +12,7 @@
 |-------------------|--------|
 | `g s` | Scenes |
 | `g i` | Images |
-| `g v` | Movies |
+| `g v` | Groups |
 | `g k` | Markers |
 | `g l` | Galleries |
 | `g p` | Performers |
@@ -24,12 +24,13 @@
 
 | Keyboard sequence | Action |
 |-------------------|--------|
-| `/` | Focus search field |
+| `/` | Focus search field / focus query field in filter dialog |
 | `f` | Show Add Filter dialog |
 | `r` | Reshuffle if sorted by random |
 | `v g` | Set view to grid |
 | `v l` | Set view to list |
 | `v w` | Set view to wall |
+| `v t` | Set view to tagger |
 | `+` | Increase zoom slider |
 | `-` | Decrease zoom slider |
 | `←` | Previous page of results |
@@ -40,6 +41,7 @@
 | `Ctrl + End` | Go to last page of results |
 | `s a` | Select all on page |
 | `s n` | Unselect all |
+| `s i` | Invert selection |
 | `e` | Edit selected |
 | `d d` | Delete selected |
 
@@ -58,15 +60,38 @@
 | `k` | Markers tab |
 | `i` | File info tab |
 | `e` | Edit tab |
+| `h` | History tab |
 | `,` | Hide/Show sidebar |
 | `.` | Hide/Show scene scrubber |
 | `o` | Increment O-Counter |
+| Ratings ||
+| `r {1-5}` | Set rating (stars) |
+| `r 0` | Unset rating (stars) |
+| `r {0-9} {0-9}` | Set rating (decimal - `00` for `10.0`) |
+| ``r ` `` | Unset rating (decimal) |
+| Cover generation ||
+| `c c` | Generate screenshot at current time |
+| `c d` | Generate default screenshot |
+| Playback ||
 | `p n` | Play next scene in queue |
 | `p p` | Play previous scene in queue |
 | `p r` | Play random scene in queue |
+| `Space` | Play/pause player |
+| `Enter` | Play/pause player |
+| `←` | Seek backwards by 10 seconds |
+| `→` | Seek forwards by 10 seconds |
+| `Shift + ←` | Seek backwards by 5 seconds |
+| `Shift + →` | Seek forwards by 5 seconds |
+| `Ctrl/Alt + ←` | Seek backwards by 1 minute |
+| `Ctrl/Alt + →` | Seek forwards by 1 minute |
 | `{1-9}` | Seek to 10-90% duration |
 | `[` | Scrub backwards 10% duration |
 | `]` | Scrub forwards 10% duration |
+| `↑` | Increase volume 10% |
+| `↓` | Decrease volume 10% |
+| `m` | Toggle mute |
+| `l` | A/B looping toggle. Press once to set start point. Press again to set end point. Press again to disable loop. |
+| `Shift + l` | Toggle looping of scene when it's over |
 
 ### Scene Markers tab shortcuts
 
@@ -74,12 +99,10 @@
 |-------------------|--------|
 | `n` | Display Create Markers dialog |
 
-### Edit Scene tab shortcuts
+### Scene Edit tab shortcuts
 
 | Keyboard sequence | Action |
 |-------------------|--------|
-| `r {1-5}` | Set rating |
-| `r 0` | Unset rating |
 | `s s` | Save Scene |
 | `d d` | Delete Scene |
 | `Ctrl + v` | Paste Scene cover |
@@ -88,25 +111,48 @@
 [//]: # "(| `l` | Focus Gallery selector |)"
 [//]: # "(| `u` | Focus Studio selector |)"
 [//]: # "(| `p` | Focus Performers selector |)"
-[//]: # "(| `v` | Focus Movies selector |)"
+[//]: # "(| `v` | Focus Groups selector |)"
 [//]: # "(| `t` | Focus Tags selector |)"
 
-## Movies Page shortcuts
+## Image Page shortcuts
 
 | Keyboard sequence | Action |
 |-------------------|--------|
-| `n` | New Movie |
+| `e` | Edit tab |
+| `o` | Increment O-Counter |
+| Ratings ||
+| `r {1-5}` | Set rating (stars) |
+| `r 0` | Unset rating (stars) |
+| `r {0-9} {0-9}` | Set rating (decimal - `00` for `10.0`) |
+| ``r ` `` | Unset rating (decimal) |
 
-## Movie Page shortcuts
+### Image Edit tab shortcuts
 
 | Keyboard sequence | Action |
 |-------------------|--------|
-| `e` | Edit Movie |
-| `s s` | Save Movie |
-| `d d` | Delete Movie |
-| `r {1-5}` | Set rating (in edit mode) |
-| `r 0` | Unset rating (in edit mode) |
-| `Ctrl + v` | Paste Movie image |
+| `s s` | Save Scene |
+| `d d` | Delete Scene |
+
+## Groups Page shortcuts
+
+| Keyboard sequence | Action |
+|-------------------|--------|
+| `n` | New Group |
+
+## Group Page shortcuts
+
+| Keyboard sequence | Action |
+|-------------------|--------|
+| `e` | Edit Group |
+| `s s` | Save Group |
+| `d d` | Delete Group |
+| ``r ` `` | [Edit mode] Unset rating (decimal) |
+| `,` | Expand/Collapse Details |
+| `Ctrl + v` | Paste Group image |
+| Ratings ||
+| `r {1-5}` | [Edit mode] Set rating (stars) |
+| `r 0` | [Edit mode] Unset rating (stars) |
+| `r {0-9} {0-9}` | [Edit mode] Set rating (decimal - `r 0 0` for `10.0`) |
 
 [//]: # "Commented until implementation is dealt with"
 [//]: # "(| `u` | Focus Studio selector (in edit mode) |)"
@@ -128,13 +174,13 @@
 
 | Keyboard sequence | Action |
 |-------------------|--------|
-| `a` | Details tab |
 | `c` | Scenes tab |
 | `e` | Edit tab |
 | `o` | Operations tab |
 | `f` | Toggle favourite |
+| `,` | Expand/Collapse Details |
 
-### Edit Performer tab shortcuts
+### Performer Edit tab shortcuts
 
 | Keyboard sequence | Action |
 |-------------------|--------|
@@ -155,6 +201,7 @@
 | `e` | Edit Studio |
 | `s s` | Save Studio |
 | `d d` | Delete Studio |
+| `,` | Expand/Collapse Details |
 | `Ctrl + v` | Paste Studio image |
 
 ## Tags Page shortcuts
@@ -170,4 +217,5 @@
 | `e` | Edit Tag |
 | `s s` | Save Tag |
 | `d d` | Delete Tag |
+| `,` | Expand/Collapse Details |
 | `Ctrl + v` | Paste Tag image |

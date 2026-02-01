@@ -1,3 +1,4 @@
+// Package paths provides functions to return paths to various resources.
 package paths
 
 import (
@@ -11,15 +12,18 @@ type Paths struct {
 
 	Scene        *scenePaths
 	SceneMarkers *sceneMarkerPaths
+	Blobs        string
 }
 
-func NewPaths(generatedPath string) *Paths {
+func NewPaths(generatedPath string, blobsPath string) Paths {
 	p := Paths{}
 	p.Generated = newGeneratedPaths(generatedPath)
 
 	p.Scene = newScenePaths(p)
 	p.SceneMarkers = newSceneMarkerPaths(p)
-	return &p
+	p.Blobs = blobsPath
+
+	return p
 }
 
 func GetStashHomeDirectory() string {

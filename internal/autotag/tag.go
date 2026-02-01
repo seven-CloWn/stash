@@ -2,31 +2,32 @@ package autotag
 
 import (
 	"context"
+	"slices"
 
 	"github.com/stashapp/stash/pkg/gallery"
 	"github.com/stashapp/stash/pkg/image"
 	"github.com/stashapp/stash/pkg/match"
 	"github.com/stashapp/stash/pkg/models"
 	"github.com/stashapp/stash/pkg/scene"
-	"github.com/stashapp/stash/pkg/sliceutil/intslice"
+	"github.com/stashapp/stash/pkg/txn"
 )
 
 type SceneQueryTagUpdater interface {
-	scene.Queryer
+	models.SceneQueryer
 	models.TagIDLoader
-	scene.PartialUpdater
+	models.SceneUpdater
 }
 
 type ImageQueryTagUpdater interface {
-	image.Queryer
+	models.ImageQueryer
 	models.TagIDLoader
-	image.PartialUpdater
+	models.ImageUpdater
 }
 
 type GalleryQueryTagUpdater interface {
-	gallery.Queryer
+	models.GalleryQueryer
 	models.TagIDLoader
-	gallery.PartialUpdater
+	models.GalleryUpdater
 }
 
 func getTagTaggers(p *models.Tag, aliases []string, cache *match.Cache) []tagger {
@@ -50,8 +51,8 @@ func getTagTaggers(p *models.Tag, aliases []string, cache *match.Cache) []tagger
 }
 
 // TagScenes searches for scenes whose path matches the provided tag name and tags the scene with the tag.
-func TagScenes(ctx context.Context, p *models.Tag, paths []string, aliases []string, rw SceneQueryTagUpdater, cache *match.Cache) error {
-	t := getTagTaggers(p, aliases, cache)
+func (tagger *Tagger) TagScenes(ctx context.Context, p *models.Tag, paths []string, aliases []string, rw SceneQueryTagUpdater) error {
+	t := getTagTaggers(p, aliases, tagger.Cache)
 
 	for _, tt := range t {
 		if err := tt.tagScenes(ctx, paths, rw, func(o *models.Scene) (bool, error) {
@@ -60,11 +61,13 @@ func TagScenes(ctx context.Context, p *models.Tag, paths []string, aliases []str
 			}
 			existing := o.TagIDs.List()
 
-			if intslice.IntInclude(existing, p.ID) {
+			if slices.Contains(existing, p.ID) {
 				return false, nil
 			}
 
-			if err := scene.AddTag(ctx, rw, o, p.ID); err != nil {
+			if err := txn.WithTxn(ctx, tagger.TxnManager, func(ctx context.Context) error {
+				return scene.AddTag(ctx, rw, o, p.ID)
+			}); err != nil {
 				return false, err
 			}
 
@@ -77,8 +80,8 @@ func TagScenes(ctx context.Context, p *models.Tag, paths []string, aliases []str
 }
 
 // TagImages searches for images whose path matches the provided tag name and tags the image with the tag.
-func TagImages(ctx context.Context, p *models.Tag, paths []string, aliases []string, rw ImageQueryTagUpdater, cache *match.Cache) error {
-	t := getTagTaggers(p, aliases, cache)
+func (tagger *Tagger) TagImages(ctx context.Context, p *models.Tag, paths []string, aliases []string, rw ImageQueryTagUpdater) error {
+	t := getTagTaggers(p, aliases, tagger.Cache)
 
 	for _, tt := range t {
 		if err := tt.tagImages(ctx, paths, rw, func(o *models.Image) (bool, error) {
@@ -87,11 +90,13 @@ func TagImages(ctx context.Context, p *models.Tag, paths []string, aliases []str
 			}
 			existing := o.TagIDs.List()
 
-			if intslice.IntInclude(existing, p.ID) {
+			if slices.Contains(existing, p.ID) {
 				return false, nil
 			}
 
-			if err := image.AddTag(ctx, rw, o, p.ID); err != nil {
+			if err := txn.WithTxn(ctx, tagger.TxnManager, func(ctx context.Context) error {
+				return image.AddTag(ctx, rw, o, p.ID)
+			}); err != nil {
 				return false, err
 			}
 
@@ -104,8 +109,8 @@ func TagImages(ctx context.Context, p *models.Tag, paths []string, aliases []str
 }
 
 // TagGalleries searches for galleries whose path matches the provided tag name and tags the gallery with the tag.
-func TagGalleries(ctx context.Context, p *models.Tag, paths []string, aliases []string, rw GalleryQueryTagUpdater, cache *match.Cache) error {
-	t := getTagTaggers(p, aliases, cache)
+func (tagger *Tagger) TagGalleries(ctx context.Context, p *models.Tag, paths []string, aliases []string, rw GalleryQueryTagUpdater) error {
+	t := getTagTaggers(p, aliases, tagger.Cache)
 
 	for _, tt := range t {
 		if err := tt.tagGalleries(ctx, paths, rw, func(o *models.Gallery) (bool, error) {
@@ -114,11 +119,13 @@ func TagGalleries(ctx context.Context, p *models.Tag, paths []string, aliases []
 			}
 			existing := o.TagIDs.List()
 
-			if intslice.IntInclude(existing, p.ID) {
+			if slices.Contains(existing, p.ID) {
 				return false, nil
 			}
 
-			if err := gallery.AddTag(ctx, rw, o, p.ID); err != nil {
+			if err := txn.WithTxn(ctx, tagger.TxnManager, func(ctx context.Context) error {
+				return gallery.AddTag(ctx, rw, o, p.ID)
+			}); err != nil {
 				return false, err
 			}
 

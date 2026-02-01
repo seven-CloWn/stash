@@ -1,27 +1,40 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import React, {
+  KeyboardEvent,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import VideoJS, { VideoJsPlayer, VideoJsPlayerOptions } from "video.js";
-import "videojs-vtt-thumbnails-freetube";
+import videojs, { VideoJsPlayer, VideoJsPlayerOptions } from "video.js";
+import useScript from "src/hooks/useScript";
+import "videojs-contrib-dash";
+import "videojs-mobile-ui";
 import "videojs-seek-buttons";
-import "videojs-landscape-fullscreen";
+import { UAParser } from "ua-parser-js";
 import "./live";
 import "./PlaylistButtons";
 import "./source-selector";
 import "./persist-volume";
-import "./markers";
+import "./autostart-button";
+import MarkersPlugin, { type IMarker } from "./markers";
+void MarkersPlugin;
+import "./vtt-thumbnails";
 import "./big-buttons";
+import "./track-activity";
+import "./vrmode";
+import "./media-session";
+import "./wake-sentinel";
 import cx from "classnames";
+import {
+  useSceneSaveActivity,
+  useSceneIncrementPlayCount,
+  useConfigureInterface,
+} from "src/core/StashService";
 
 import * as GQL from "src/core/generated-graphql";
 import { ScenePlayerScrubber } from "./ScenePlayerScrubber";
-import { ConfigurationContext } from "src/hooks/Config";
+import { useConfigurationContext } from "src/hooks/Config";
 import {
   ConnectionState,
   InteractiveContext,
@@ -30,7 +43,32 @@ import { SceneInteractiveStatus } from "src/hooks/Interactive/status";
 import { languageMap } from "src/utils/caption";
 import { VIDEO_PLAYER_ID } from "./util";
 
-function handleHotkeys(player: VideoJsPlayer, event: VideoJS.KeyboardEvent) {
+// @ts-ignore
+import airplay from "@silvermine/videojs-airplay";
+// @ts-ignore
+import chromecast from "@silvermine/videojs-chromecast";
+import abLoopPlugin from "videojs-abloop";
+import ScreenUtils from "src/utils/screen";
+import { PatchComponent } from "src/patch";
+
+// register videojs plugins
+airplay(videojs);
+chromecast(videojs);
+abLoopPlugin(window, videojs);
+
+function handleHotkeys(player: VideoJsPlayer, event: videojs.KeyboardEvent) {
+  function seekStep(step: number) {
+    const time = player.currentTime() + step;
+    const duration = player.duration();
+    if (time < 0) {
+      player.currentTime(0);
+    } else if (time < duration) {
+      player.currentTime(time);
+    } else {
+      player.currentTime(duration);
+    }
+  }
+
   function seekPercent(percent: number) {
     const duration = player.duration();
     const time = duration * percent;
@@ -45,8 +83,60 @@ function handleHotkeys(player: VideoJsPlayer, event: VideoJS.KeyboardEvent) {
     player.currentTime(time);
   }
 
+  function toggleABLooping() {
+    const opts = player.abLoopPlugin.getOptions();
+    if (!opts.start) {
+      opts.start = player.currentTime();
+    } else if (!opts.end) {
+      opts.end = player.currentTime();
+      opts.enabled = true;
+    } else {
+      opts.start = 0;
+      opts.end = 0;
+      opts.enabled = false;
+    }
+    player.abLoopPlugin.setOptions(opts);
+  }
+
+  let seekFactor = 10;
+  if (event.shiftKey) {
+    seekFactor = 5;
+  } else if (event.ctrlKey || event.altKey) {
+    seekFactor = 60;
+  }
+  switch (event.which) {
+    case 39: // right arrow
+      seekStep(seekFactor);
+      break;
+    case 37: // left arrow
+      seekStep(-seekFactor);
+      break;
+  }
+
+  // toggle player looping with shift+l
+  if (event.shiftKey && event.which === 76) {
+    player.loop(!player.loop());
+    return;
+  }
+
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
     return;
+  }
+
+  const skipButtons = player.skipButtons();
+  if (skipButtons) {
+    // handle multimedia keys
+    switch (event.key) {
+      case "MediaTrackNext":
+        if (!skipButtons.onNext) return;
+        skipButtons.onNext();
+        break;
+      case "MediaTrackPrevious":
+        if (!skipButtons.onPrevious) return;
+        skipButtons.onPrevious();
+        break;
+      // MediaPlayPause handled by videojs
+    }
   }
 
   switch (event.which) {
@@ -62,11 +152,8 @@ function handleHotkeys(player: VideoJsPlayer, event: VideoJS.KeyboardEvent) {
       if (player.isFullscreen()) player.exitFullscreen();
       else player.requestFullscreen();
       break;
-    case 39: // right arrow
-      player.currentTime(Math.min(player.duration(), player.currentTime() + 5));
-      break;
-    case 37: // left arrow
-      player.currentTime(Math.max(0, player.currentTime() - 5));
+    case 76: // l
+      toggleABLooping();
       break;
     case 38: // up arrow
       player.volume(player.volume() + 0.1);
@@ -113,589 +200,806 @@ function handleHotkeys(player: VideoJsPlayer, event: VideoJS.KeyboardEvent) {
   }
 }
 
-interface IScenePlayerProps {
-  className?: string;
-  scene: GQL.SceneDataFragment | undefined | null;
-  timestamp: number;
-  autoplay?: boolean;
-  permitLoop?: boolean;
-  onComplete?: () => void;
-  onNext?: () => void;
-  onPrevious?: () => void;
+type MarkerFragment = Pick<GQL.SceneMarker, "title" | "seconds"> & {
+  primary_tag: Pick<GQL.Tag, "name">;
+  tags: Array<Pick<GQL.Tag, "name">>;
+};
+
+function getMarkerTitle(marker: MarkerFragment) {
+  if (marker.title) {
+    return marker.title;
+  }
+
+  let ret = marker.primary_tag.name;
+  if (marker.tags.length) {
+    ret += `, ${marker.tags.map((t) => t.name).join(", ")}`;
+  }
+
+  return ret;
 }
 
-export const ScenePlayer: React.FC<IScenePlayerProps> = ({
-  className,
-  autoplay,
-  scene,
-  timestamp,
-  permitLoop = true,
-  onComplete,
-  onNext,
-  onPrevious,
-}) => {
-  const { configuration } = useContext(ConfigurationContext);
-  const config = configuration?.interface;
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const playerRef = useRef<VideoJsPlayer | undefined>();
-  const sceneId = useRef<string | undefined>();
-  const skipButtonsRef = useRef<any>();
+interface IScenePlayerProps {
+  scene: GQL.SceneDataFragment;
+  hideScrubberOverride: boolean;
+  autoplay?: boolean;
+  permitLoop?: boolean;
+  initialTimestamp: number;
+  sendSetTimestamp: (setTimestamp: (value: number) => void) => void;
+  onComplete: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+}
 
-  const [time, setTime] = useState(0);
+export const ScenePlayer: React.FC<IScenePlayerProps> = PatchComponent(
+  "ScenePlayer",
+  ({
+    scene,
+    hideScrubberOverride,
+    autoplay,
+    permitLoop = true,
+    initialTimestamp: _initialTimestamp,
+    sendSetTimestamp,
+    onComplete,
+    onNext,
+    onPrevious,
+  }) => {
+    const { configuration } = useConfigurationContext();
+    const interfaceConfig = configuration?.interface;
+    const uiConfig = configuration?.ui;
+    const videoRef = useRef<HTMLDivElement>(null);
+    const [_player, setPlayer] = useState<VideoJsPlayer>();
+    const sceneId = useRef<string>();
+    const [sceneSaveActivity] = useSceneSaveActivity();
+    const [sceneIncrementPlayCount] = useSceneIncrementPlayCount();
+    const [updateInterfaceConfig] = useConfigureInterface();
 
-  const {
-    interactive: interactiveClient,
-    uploadScript,
-    currentScript,
-    initialised: interactiveInitialised,
-    state: interactiveState,
-  } = React.useContext(InteractiveContext);
+    const [time, setTime] = useState(0);
+    const [ready, setReady] = useState(false);
 
-  const [initialTimestamp] = useState(timestamp);
-  const [ready, setReady] = useState(false);
-  const started = useRef(false);
-  const interactiveReady = useRef(false);
+    const {
+      interactive: interactiveClient,
+      uploadScript,
+      currentScript,
+      initialised: interactiveInitialised,
+      state: interactiveState,
+    } = React.useContext(InteractiveContext);
 
-  const file = useMemo(
-    () => ((scene?.files.length ?? 0) > 0 ? scene?.files[0] : undefined),
-    [scene]
-  );
+    const [fullscreen, setFullscreen] = useState(false);
+    const [showScrubber, setShowScrubber] = useState(false);
 
-  const maxLoopDuration = config?.maximumLoopDuration ?? 0;
+    const started = useRef(false);
+    const auto = useRef(false);
+    const interactiveReady = useRef(false);
+    const minimumPlayPercent = uiConfig?.minimumPlayPercent ?? 0;
+    const trackActivity = uiConfig?.trackActivity ?? true;
+    const vrTag = uiConfig?.vrTag ?? undefined;
 
-  const looping = useMemo(
-    () =>
-      !!file &&
-      !!file.duration &&
-      permitLoop &&
-      maxLoopDuration !== 0 &&
-      file.duration < maxLoopDuration,
-    [file, permitLoop, maxLoopDuration]
-  );
+    useScript(
+      "https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1",
+      uiConfig?.enableChromecast
+    );
 
-  useEffect(() => {
-    if (playerRef.current && timestamp >= 0) {
-      const player = playerRef.current;
-      player.play()?.then(() => {
-        player.currentTime(timestamp);
-      });
-    }
-  }, [timestamp]);
+    const file = useMemo(
+      () => (scene.files.length > 0 ? scene.files[0] : undefined),
+      [scene]
+    );
 
-  useEffect(() => {
-    if (playerRef.current) {
-      const player = playerRef.current;
-      player.loop(looping);
-      interactiveClient.setLooping(looping);
-    }
-  }, [looping, interactiveClient]);
+    const maxLoopDuration = interfaceConfig?.maximumLoopDuration ?? 0;
+    const looping = useMemo(
+      () =>
+        !!file?.duration &&
+        permitLoop &&
+        maxLoopDuration !== 0 &&
+        file.duration < maxLoopDuration,
+      [file, permitLoop, maxLoopDuration]
+    );
 
-  useEffect(() => {
-    const videoElement = videoRef.current;
-    if (!videoElement) return;
+    const getPlayer = useCallback(() => {
+      if (!_player) return null;
+      if (_player.isDisposed()) return null;
+      return _player;
+    }, [_player]);
 
-    const options: VideoJsPlayerOptions = {
-      controls: true,
-      controlBar: {
-        pictureInPictureToggle: false,
-        volumePanel: {
-          inline: false,
-        },
-        chaptersButton: false,
-      },
-      nativeControlsForTouch: false,
-      playbackRates: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
-      inactivityTimeout: 2000,
-      preload: "none",
-      userActions: {
-        hotkeys: function (event) {
-          const player = this as VideoJsPlayer;
-          handleHotkeys(player, event);
-        },
-      },
-    };
-
-    const player = VideoJS(videoElement, options);
-
-    const settings = (player as any).textTrackSettings;
-    settings.setValues({
-      backgroundColor: "#000",
-      backgroundOpacity: "0.5",
-    });
-    settings.updateDisplay();
-
-    (player as any).markers();
-    (player as any).offset();
-    (player as any).sourceSelector();
-    (player as any).persistVolume();
-    (player as any).bigButtons();
-
-    player.focus();
-    playerRef.current = player;
-  }, []);
-
-  useEffect(() => {
-    if (scene?.interactive && interactiveInitialised) {
-      interactiveReady.current = false;
-      uploadScript(scene.paths.funscript || "").then(() => {
-        interactiveReady.current = true;
-      });
-    }
-  }, [
-    uploadScript,
-    interactiveInitialised,
-    scene?.interactive,
-    scene?.paths.funscript,
-  ]);
-
-  useEffect(() => {
-    if (skipButtonsRef.current) {
-      skipButtonsRef.current.setForwardHandler(onNext);
-      skipButtonsRef.current.setBackwardHandler(onPrevious);
-    }
-  }, [onNext, onPrevious]);
-
-  useEffect(() => {
-    const player = playerRef.current;
-    if (player) {
-      player.seekButtons({
-        forward: 10,
-        back: 10,
-      });
-
-      skipButtonsRef.current = player.skipButtons() ?? undefined;
-
-      player.focus();
-    }
-
-    // Video player destructor
-    return () => {
-      if (playerRef.current) {
-        playerRef.current.dispose();
-        playerRef.current = undefined;
+    useEffect(() => {
+      if (hideScrubberOverride || fullscreen) {
+        setShowScrubber(false);
+        return;
       }
-    };
-  }, []);
 
-  const start = useCallback(() => {
-    const player = playerRef.current;
-    if (player && scene) {
-      started.current = true;
+      const onResize = () => {
+        const show = window.innerHeight >= 450 && !ScreenUtils.isMobile();
+        setShowScrubber(show);
+      };
+      onResize();
 
-      player
-        .play()
-        ?.then(() => {
-          if (initialTimestamp > 0) {
-            player.currentTime(initialTimestamp);
+      window.addEventListener("resize", onResize);
+
+      return () => window.removeEventListener("resize", onResize);
+    }, [hideScrubberOverride, fullscreen]);
+
+    useEffect(() => {
+      sendSetTimestamp((value: number) => {
+        const player = getPlayer();
+        if (player && value >= 0) {
+          if (player.hasStarted() && player.paused()) {
+            player.currentTime(value);
+          } else {
+            player.play()?.then(() => {
+              player.currentTime(value);
+            });
           }
-        })
-        .catch(() => {
-          if (scene.paths.screenshot) player.poster(scene.paths.screenshot);
+        }
+      });
+    }, [sendSetTimestamp, getPlayer]);
+
+    // Initialize VideoJS player
+    useEffect(() => {
+      const options: VideoJsPlayerOptions = {
+        id: VIDEO_PLAYER_ID,
+        controls: true,
+        controlBar: {
+          pictureInPictureToggle: false,
+          volumePanel: {
+            inline: false,
+          },
+          chaptersButton: false,
+        },
+        html5: {
+          dash: {
+            updateSettings: [
+              {
+                streaming: {
+                  buffer: {
+                    bufferTimeAtTopQuality: 30,
+                    bufferTimeAtTopQualityLongForm: 30,
+                  },
+                  gaps: {
+                    jumpGaps: false,
+                    jumpLargeGaps: false,
+                  },
+                },
+              },
+            ],
+          },
+        },
+        nativeControlsForTouch: false,
+        playbackRates: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
+        inactivityTimeout: 700,
+        preload: "none",
+        playsinline: true,
+        techOrder: ["chromecast", "html5"],
+        userActions: {
+          hotkeys: function (this: VideoJsPlayer, event) {
+            handleHotkeys(this, event);
+          },
+        },
+        plugins: {
+          airPlay: {
+            addButtonToControlBar: uiConfig?.enableChromecast ?? false,
+          },
+          chromecast: {},
+          vttThumbnails: {
+            showTimestamp: true,
+          },
+          markers: {},
+          sourceSelector: {},
+          persistVolume: {},
+          bigButtons: {},
+          seekButtons: {
+            forward: 10,
+            back: 10,
+          },
+          skipButtons: {},
+          trackActivity: {},
+          vrMenu: {},
+          autostartButton: {
+            enabled: interfaceConfig?.autostartVideo ?? false,
+          },
+          abLoopPlugin: {
+            start: 0,
+            end: false,
+            enabled: false,
+            loopIfBeforeStart: true,
+            loopIfAfterEnd: true,
+            pauseAfterLooping: false,
+            pauseBeforeLooping: false,
+            createButtons: uiConfig?.showAbLoopControls ?? false,
+          },
+          mediaSession: {},
+          wakeSentinel: {},
+        },
+      };
+
+      const videoEl = document.createElement("video-js");
+      videoEl.setAttribute("data-vjs-player", "true");
+      videoEl.setAttribute("crossorigin", "anonymous");
+      videoEl.classList.add("vjs-big-play-centered");
+      videoRef.current!.appendChild(videoEl);
+
+      const vjs = videojs(videoEl, options);
+
+      /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+      const settings = (vjs as any).textTrackSettings;
+      settings.setValues({
+        backgroundColor: "#000",
+        backgroundOpacity: "0.5",
+      });
+      settings.updateDisplay();
+
+      vjs.focus();
+      setPlayer(vjs);
+
+      // Video player destructor
+      return () => {
+        vjs.dispose();
+        videoEl.remove();
+        setPlayer(undefined);
+
+        // reset sceneId to force reload sources
+        sceneId.current = undefined;
+      };
+      // empty deps - only init once
+      // showAbLoopControls is necessary to re-init the player when the config changes
+      // Note: interfaceConfig?.autostartVideo is intentionally excluded to prevent
+      // player re-initialization when toggling autostart (which would interrupt playback)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [uiConfig?.showAbLoopControls, uiConfig?.enableChromecast]);
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+      const skipButtons = player.skipButtons();
+      skipButtons.setForwardHandler(onNext);
+      skipButtons.setBackwardHandler(onPrevious);
+    }, [getPlayer, onNext, onPrevious]);
+
+    useEffect(() => {
+      if (scene.interactive && interactiveInitialised) {
+        interactiveReady.current = false;
+        uploadScript(scene.paths.funscript || "").then(() => {
+          interactiveReady.current = true;
         });
-    }
-  }, [scene, initialTimestamp]);
-
-  useEffect(() => {
-    let prevCaptionOffset = 0;
-
-    function addCaptionOffset(player: VideoJsPlayer, offset: number) {
-      const tracks = player.remoteTextTracks();
-      for (let i = 0; i < tracks.length; i++) {
-        const track = tracks[i];
-        const { cues } = track;
-        if (cues) {
-          for (let j = 0; j < cues.length; j++) {
-            const cue = cues[j];
-            cue.startTime = cue.startTime + offset;
-            cue.endTime = cue.endTime + offset;
-          }
-        }
       }
-    }
+    }, [
+      uploadScript,
+      interactiveInitialised,
+      scene.interactive,
+      scene.paths.funscript,
+    ]);
 
-    function removeCaptionOffset(player: VideoJsPlayer, offset: number) {
-      const tracks = player.remoteTextTracks();
-      for (let i = 0; i < tracks.length; i++) {
-        const track = tracks[i];
-        const { cues } = track;
-        if (cues) {
-          for (let j = 0; j < cues.length; j++) {
-            const cue = cues[j];
-            cue.startTime = cue.startTime + prevCaptionOffset - offset;
-            cue.endTime = cue.endTime + prevCaptionOffset - offset;
-          }
-        }
-      }
-    }
+    // play the script if video started before script upload finished
+    useEffect(() => {
+      if (interactiveState !== ConnectionState.Ready) return;
+      const player = getPlayer();
+      if (!player || player.paused()) return;
+      interactiveClient.ensurePlaying(player.currentTime());
+    }, [interactiveState, getPlayer, interactiveClient]);
 
-    function handleOffset(player: VideoJsPlayer) {
-      if (!scene || !file) return;
-
-      const currentSrc = new URL(player.currentSrc());
-
-      const isDirect =
-        currentSrc.pathname.endsWith("/stream") ||
-        currentSrc.pathname.endsWith("/stream.m3u8");
-
-      const curTime = player.currentTime();
-      if (!isDirect) {
-        (player as any).setOffsetDuration(file.duration);
-      } else {
-        (player as any).clearOffsetDuration();
-      }
-
-      if (curTime != prevCaptionOffset) {
-        if (!isDirect) {
-          removeCaptionOffset(player, curTime);
-          prevCaptionOffset = curTime;
-        } else {
-          if (prevCaptionOffset != 0) {
-            addCaptionOffset(player, prevCaptionOffset);
-            prevCaptionOffset = 0;
-          }
-        }
-      }
-    }
-
-    function handleError(play: boolean) {
-      const player = playerRef.current;
+    useEffect(() => {
+      const player = getPlayer();
       if (!player) return;
 
-      const currentFile = player.currentSource();
-      if (currentFile) {
-        // eslint-disable-next-line no-console
-        console.log(`Source failed: ${currentFile.src}`);
-        player.focus();
+      const vrMenu = player.vrMenu();
+
+      let showButton = false;
+
+      if (vrTag) {
+        showButton = scene.tags.some((tag) => vrTag === tag.name);
       }
 
-      if (tryNextStream()) {
-        // eslint-disable-next-line no-console
-        console.log(`Trying next source in playlist: ${player.currentSrc()}`);
-        player.load();
-        if (play) {
-          player.play();
-        }
-      } else {
-        // eslint-disable-next-line no-console
-        console.log("No more sources in playlist.");
-      }
-    }
+      vrMenu.setShowButton(showButton);
+    }, [getPlayer, scene, vrTag]);
 
-    function tryNextStream() {
-      const player = playerRef.current;
+    // Player event handlers
+    useEffect(() => {
+      const player = getPlayer();
       if (!player) return;
 
-      const sources = player.currentSources();
-
-      if (sources.length > 1) {
-        sources.shift();
-        player.src(sources);
-        return true;
+      function canplay(this: VideoJsPlayer) {
+        // if we're seeking before starting, don't set the initial timestamp
+        // when starting from the beginning, there is a small delay before the event
+        // is triggered, so we can't just check if the time is 0
+        if (this.currentTime() >= 0.1) {
+          return;
+        }
       }
 
-      return false;
-    }
-
-    function getDefaultLanguageCode() {
-      var languageCode = window.navigator.language;
-
-      if (languageCode.indexOf("-") !== -1) {
-        languageCode = languageCode.split("-")[0];
+      function playing(this: VideoJsPlayer) {
+        // This still runs even if autoplay failed on Safari,
+        // only set flag if actually playing
+        if (!started.current && !this.paused()) {
+          started.current = true;
+        }
       }
 
-      if (languageCode.indexOf("_") !== -1) {
-        languageCode = languageCode.split("_")[0];
+      function loadstart(this: VideoJsPlayer) {
+        setReady(true);
       }
 
-      return languageCode;
-    }
+      function fullscreenchange(this: VideoJsPlayer) {
+        setFullscreen(this.isFullscreen());
+      }
 
-    function loadCaptions(player: VideoJsPlayer) {
-      if (!scene) return;
+      player.on("canplay", canplay);
+      player.on("playing", playing);
+      player.on("loadstart", loadstart);
+      player.on("fullscreenchange", fullscreenchange);
 
-      if (scene.captions) {
-        var languageCode = getDefaultLanguageCode();
-        var hasDefault = false;
+      return () => {
+        player.off("canplay", canplay);
+        player.off("playing", playing);
+        player.off("loadstart", loadstart);
+        player.off("fullscreenchange", fullscreenchange);
+      };
+    }, [getPlayer]);
+
+    // delay before second play event after a play event to adjust for video player issues
+    const DELAY_FOR_SECOND_PLAY_MS = 1000;
+    const playingTimer = useRef<number>();
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      function playing(this: VideoJsPlayer) {
+        if (scene.interactive && interactiveReady.current) {
+          interactiveClient.play(this.currentTime());
+          // trigger a second script play event to adjust for video player issues
+          clearTimeout(playingTimer.current);
+          playingTimer.current = setTimeout(() => {
+            if (this.paused()) return;
+            interactiveClient.play(this.currentTime());
+          }, DELAY_FOR_SECOND_PLAY_MS);
+        }
+      }
+
+      function pause(this: VideoJsPlayer) {
+        interactiveClient.pause();
+      }
+
+      function timeupdate(this: VideoJsPlayer) {
+        if (this.paused()) return;
+        setTime(this.currentTime());
+      }
+
+      player.on("playing", playing);
+      player.on("pause", pause);
+      player.on("timeupdate", timeupdate);
+
+      return () => {
+        player.off("playing", playing);
+        player.off("pause", pause);
+        player.off("timeupdate", timeupdate);
+        clearTimeout(playingTimer.current);
+      };
+    }, [getPlayer, interactiveClient, scene]);
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      // don't re-initialise the player unless the scene has changed
+      if (!file || scene.id === sceneId.current) return;
+
+      sceneId.current = scene.id;
+
+      setReady(false);
+
+      // reset on new scene
+      player.trackActivity().reset();
+
+      // always stop the interactive client on initialisation
+      interactiveClient.pause();
+
+      const isSafari = UAParser().browser.name?.includes("Safari");
+      const isLandscape = file.height && file.width && file.width > file.height;
+      const mobileUiOptions = {
+        fullscreen: {
+          enterOnRotate: true,
+          exitOnRotate: true,
+          lockOnRotate: true,
+          lockToLandscapeOnEnter: uiConfig?.disableMobileMediaAutoRotateEnabled
+            ? false
+            : isLandscape,
+        },
+        touchControls: {
+          disabled: true,
+        },
+      };
+      if (!isSafari) {
+        player.mobileUi(mobileUiOptions);
+      }
+
+      function isDirect(src: URL) {
+        return (
+          src.pathname.endsWith("/stream") ||
+          src.pathname.endsWith("/stream.mpd") ||
+          src.pathname.endsWith("/stream.m3u8")
+        );
+      }
+
+      const { duration } = file;
+      const sourceSelector = player.sourceSelector();
+      sourceSelector.setSources(
+        scene.sceneStreams
+          .filter((stream) => {
+            const src = new URL(stream.url);
+            const isFileTranscode = !isDirect(src);
+
+            return !(isFileTranscode && isSafari);
+          })
+          .map((stream) => {
+            const src = new URL(stream.url);
+
+            return {
+              src: stream.url,
+              type: stream.mime_type ?? undefined,
+              label: stream.label ?? undefined,
+              offset: !isDirect(src),
+              duration,
+            };
+          })
+      );
+
+      function getDefaultLanguageCode() {
+        let languageCode = window.navigator.language;
+
+        if (languageCode.indexOf("-") !== -1) {
+          languageCode = languageCode.split("-")[0];
+        }
+
+        if (languageCode.indexOf("_") !== -1) {
+          languageCode = languageCode.split("_")[0];
+        }
+
+        return languageCode;
+      }
+
+      if (scene.captions && scene.captions.length > 0) {
+        const languageCode = getDefaultLanguageCode();
+        let hasDefault = false;
 
         for (let caption of scene.captions) {
-          var lang = caption.language_code;
-          var label = lang;
+          const lang = caption.language_code;
+          let label = lang;
           if (languageMap.has(lang)) {
             label = languageMap.get(lang)!;
           }
 
           label = label + " (" + caption.caption_type + ")";
-          var setAsDefault = !hasDefault && languageCode == lang;
-          if (!hasDefault && setAsDefault) {
+          const setAsDefault = !hasDefault && languageCode == lang;
+          if (setAsDefault) {
             hasDefault = true;
           }
-          player.addRemoteTextTrack(
+          sourceSelector.addTextTrack(
             {
-              src:
-                scene.paths.caption +
-                "?lang=" +
-                lang +
-                "&type=" +
-                caption.caption_type,
+              src: `${scene.paths.caption}?lang=${lang}&type=${caption.caption_type}`,
               kind: "captions",
               srclang: lang,
               label: label,
               default: setAsDefault,
             },
-            true
+            false
           );
         }
       }
-    }
 
-    function loadstart(this: VideoJsPlayer) {
-      // handle offset after loading so that we get the correct current source
-      handleOffset(this);
-    }
+      const alwaysStartFromBeginning =
+        uiConfig?.alwaysStartFromBeginning ?? false;
+      const resumeTime = scene.resume_time ?? 0;
 
-    function onPlay(this: VideoJsPlayer) {
-      this.poster("");
-      if (scene?.interactive && interactiveReady.current) {
-        interactiveClient.play(this.currentTime());
+      let startPosition = _initialTimestamp;
+      if (
+        !startPosition &&
+        !alwaysStartFromBeginning &&
+        file.duration > resumeTime
+      ) {
+        startPosition = resumeTime;
+      }
+
+      setTime(startPosition);
+
+      player.load();
+      player.focus();
+
+      // Check the autostart button plugin for user preference
+      const autostartButton = player.autostartButton();
+      const buttonEnabled = autostartButton.getEnabled();
+      auto.current =
+        autoplay ||
+        buttonEnabled ||
+        (interfaceConfig?.autostartVideo ?? false) ||
+        _initialTimestamp > 0;
+
+      player.ready(() => {
+        player.vttThumbnails().src(scene.paths.vtt ?? null);
+
+        if (startPosition) {
+          player.currentTime(startPosition);
+        }
+      });
+
+      started.current = false;
+    }, [
+      getPlayer,
+      file,
+      scene,
+      interactiveClient,
+      autoplay,
+      interfaceConfig?.autostartVideo,
+      uiConfig?.alwaysStartFromBeginning,
+      uiConfig?.disableMobileMediaAutoRotateEnabled,
+      _initialTimestamp,
+    ]);
+
+    useEffect(() => {
+      return () => {
+        // stop the interactive client on unmount
+        interactiveClient.pause();
+      };
+    }, [interactiveClient]);
+
+    const loadMarkers = useCallback(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      const markerData = scene.scene_markers.map((marker) => ({
+        title: getMarkerTitle(marker),
+        seconds: marker.seconds,
+        end_seconds: marker.end_seconds ?? null,
+        primaryTag: marker.primary_tag,
+      }));
+
+      const markers = player!.markers();
+
+      const uniqueTagNames = markerData
+        .map((marker) => marker.primaryTag.name)
+        .filter((value, index, self) => self.indexOf(value) === index);
+
+      // Wait for colors
+      markers.findColors(uniqueTagNames);
+
+      const showRangeTags =
+        !ScreenUtils.isMobile() && (uiConfig?.showRangeMarkers ?? true);
+      const timestampMarkers: IMarker[] = [];
+      const rangeMarkers: IMarker[] = [];
+
+      if (!showRangeTags) {
+        for (const marker of markerData) {
+          timestampMarkers.push(marker);
+        }
+      } else {
+        for (const marker of markerData) {
+          if (marker.end_seconds === null) {
+            timestampMarkers.push(marker);
+          } else {
+            rangeMarkers.push(marker);
+          }
+        }
+      }
+
+      requestAnimationFrame(() => {
+        markers.addDotMarkers(timestampMarkers);
+        markers.addRangeMarkers(rangeMarkers);
+      });
+    }, [getPlayer, scene, uiConfig]);
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      if (scene.paths.screenshot) {
+        player.poster(scene.paths.screenshot);
+      } else {
+        player.poster("");
+      }
+
+      // Define the event handler outside the useEffect
+      const handleLoadMetadata = () => {
+        loadMarkers();
+      };
+
+      // Ensure markers are added after player is fully ready and sources are loaded
+      if (player.readyState() >= 1) {
+        loadMarkers();
+      } else {
+        player.on("loadedmetadata", handleLoadMetadata);
+      }
+
+      return () => {
+        player.off("loadedmetadata", handleLoadMetadata);
+        const markers = player!.markers();
+        markers.clearMarkers();
+      };
+    }, [getPlayer, scene, loadMarkers]);
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      async function saveActivity(resumeTime: number, playDuration: number) {
+        if (!scene.id) return;
+
+        await sceneSaveActivity({
+          variables: {
+            id: scene.id,
+            playDuration,
+            resume_time: resumeTime,
+          },
+        });
+      }
+
+      async function incrementPlayCount() {
+        if (!scene.id) return;
+
+        await sceneIncrementPlayCount({
+          variables: {
+            id: scene.id,
+          },
+        });
+      }
+
+      const activity = player.trackActivity();
+      activity.saveActivity = saveActivity;
+      activity.incrementPlayCount = incrementPlayCount;
+      activity.minimumPlayPercent = minimumPlayPercent;
+      activity.setEnabled(trackActivity);
+    }, [
+      getPlayer,
+      scene,
+      vrTag,
+      trackActivity,
+      minimumPlayPercent,
+      sceneIncrementPlayCount,
+      sceneSaveActivity,
+    ]);
+
+    // Sync autostart button with config changes
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      async function updateAutoStart(enabled: boolean) {
+        await updateInterfaceConfig({
+          variables: {
+            input: {
+              autostartVideo: enabled,
+            },
+          },
+        });
+      }
+
+      const autostartButton = player.autostartButton();
+      if (autostartButton) {
+        autostartButton.syncWithConfig(
+          interfaceConfig?.autostartVideo ?? false
+        );
+        autostartButton.updateAutoStart = updateAutoStart;
+      }
+    }, [getPlayer, updateInterfaceConfig, interfaceConfig?.autostartVideo]);
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      player.loop(looping);
+      interactiveClient.setLooping(looping);
+    }, [getPlayer, interactiveClient, looping]);
+
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player || !ready || !auto.current) {
+        return;
+      }
+
+      // check if we're waiting for the interactive client
+      if (
+        scene.interactive &&
+        interactiveClient.handyKey &&
+        currentScript !== scene.paths.funscript
+      ) {
+        return;
+      }
+
+      player.play();
+      auto.current = false;
+    }, [getPlayer, scene, ready, interactiveClient, currentScript]);
+
+    // Attach handler for onComplete event
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      player.on("ended", onComplete);
+
+      return () => player.off("ended");
+    }, [getPlayer, onComplete]);
+
+    // set up mediaSession plugin
+    useEffect(() => {
+      const player = getPlayer();
+      if (!player) return;
+
+      // set up mediasession plugin
+      // get performer names as array
+      const performers = scene?.performers.map((p) => p.name).join(", ");
+      player
+        .mediaSession()
+        .setMetadata(
+          scene?.title ?? "Stash",
+          scene?.studio?.name ?? performers ?? "Stash",
+          scene.paths.screenshot || ""
+        );
+    }, [getPlayer, scene]);
+
+    const pausedBeforeScrubber = useRef(true);
+
+    function onScrubberScroll() {
+      const player = getPlayer();
+      if (started.current && player) {
+        pausedBeforeScrubber.current = player.paused();
+        player.pause();
       }
     }
 
-    function pause() {
-      interactiveClient.pause();
-    }
-
-    function timeupdate(this: VideoJsPlayer) {
-      if (scene?.interactive && interactiveReady.current) {
-        interactiveClient.ensurePlaying(this.currentTime());
+    function onScrubberSeek(seconds: number) {
+      const player = getPlayer();
+      if (started.current && player) {
+        player.currentTime(seconds);
+        if (!pausedBeforeScrubber.current) {
+          player.play();
+        }
+      } else {
+        setTime(seconds);
       }
-      setTime(this.currentTime());
     }
 
-    function seeking(this: VideoJsPlayer) {
-      this.play();
-    }
+    // Override spacebar to always pause/play
+    function onKeyDown(this: HTMLDivElement, event: KeyboardEvent) {
+      const player = getPlayer();
+      if (!player) return;
 
-    function error() {
-      handleError(true);
-    }
-
-    // changing source (eg when seeking) resets the playback rate
-    // so set the default in addition to the current rate
-    function ratechange(this: VideoJsPlayer) {
-      this.defaultPlaybackRate(this.playbackRate());
-    }
-
-    function loadedmetadata(this: VideoJsPlayer) {
-      if (!this.videoWidth() && !this.videoHeight()) {
-        // Occurs during preload when videos with supported audio/unsupported video are preloaded.
-        // Treat this as a decoding error and try the next source without playing.
-        // However on Safari we get an media event when m3u8 is loaded which needs to be ignored.
-        const currentFile = this.currentSrc();
-        if (currentFile != null && !currentFile.includes("m3u8")) {
-          // const play = !player.paused();
-          // handleError(play);
-          this.error(MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED);
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (event.key == " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (player.paused()) {
+          player.play();
+        } else {
+          player.pause();
         }
       }
     }
 
-    const player = playerRef.current;
-    if (!player) return;
+    const isPortrait =
+      file && file.height && file.width && file.height > file.width;
 
-    // always initialise event handlers since these are destroyed when the
-    // component is destroyed
-    player.on("loadstart", loadstart);
-    player.on("play", onPlay);
-    player.on("pause", pause);
-    player.on("timeupdate", timeupdate);
-    player.on("seeking", seeking);
-    player.on("error", error);
-    player.on("ratechange", ratechange);
-    player.on("loadedmetadata", loadedmetadata);
-
-    // don't re-initialise the player unless the scene has changed
-    if (!scene || !file || scene.id === sceneId.current) return;
-    sceneId.current = scene.id;
-
-    // always stop the interactive client on initialisation
-    interactiveClient.pause();
-    interactiveReady.current = false;
-
-    const auto =
-      autoplay || (config?.autostartVideo ?? false) || initialTimestamp > 0;
-    if (!auto && scene.paths?.screenshot) player.poster(scene.paths.screenshot);
-    else player.poster("");
-
-    const isLandscape = file.height && file.width && file.width > file.height;
-
-    if (isLandscape) {
-      (player as any).landscapeFullscreen({
-        fullscreen: {
-          enterOnRotate: true,
-          exitOnRotate: true,
-          alwaysInLandscapeMode: true,
-          iOS: false,
-        },
-      });
-    }
-
-    // clear the offset before loading anything new.
-    // otherwise, the offset will be applied to the next file when
-    // currentTime is called.
-    (player as any).clearOffsetDuration();
-
-    const tracks = player.remoteTextTracks();
-    for (let i = 0; i < tracks.length; i++) {
-      player.removeRemoteTextTrack(tracks[i] as any);
-    }
-
-    player.src(
-      scene.sceneStreams.map((stream) => ({
-        src: stream.url,
-        type: stream.mime_type ?? undefined,
-        label: stream.label ?? undefined,
-      }))
-    );
-
-    if (scene.paths.chapters_vtt) {
-      player.addRemoteTextTrack(
-        {
-          src: scene.paths.chapters_vtt,
-          kind: "chapters",
-          default: true,
-        },
-        true
-      );
-    }
-
-    if (scene.captions?.length! > 0) {
-      loadCaptions(player);
-    }
-
-    player.currentTime(0);
-
-    player.loop(looping);
-    interactiveClient.setLooping(looping);
-
-    player.load();
-    player.focus();
-
-    if ((player as any).vttThumbnails?.src)
-      (player as any).vttThumbnails?.src(scene?.paths.vtt);
-    else
-      (player as any).vttThumbnails({
-        src: scene?.paths.vtt,
-        showTimestamp: true,
-      });
-
-    setReady(true);
-    started.current = false;
-
-    return () => {
-      setReady(false);
-
-      // stop the interactive client
-      interactiveClient.pause();
-
-      player.off("loadstart", loadstart);
-      player.off("play", onPlay);
-      player.off("pause", pause);
-      player.off("timeupdate", timeupdate);
-      player.off("seeking", seeking);
-      player.off("error", error);
-      player.off("ratechange", ratechange);
-      player.off("loadedmetadata", loadedmetadata);
-    };
-  }, [
-    scene,
-    file,
-    config?.autostartVideo,
-    looping,
-    initialTimestamp,
-    autoplay,
-    interactiveClient,
-    start,
-  ]);
-
-  useEffect(() => {
-    if (!ready || started.current) {
-      return;
-    }
-
-    const auto =
-      autoplay || (config?.autostartVideo ?? false) || initialTimestamp > 0;
-
-    // check if we're waiting for the interactive client
-    const interactiveWaiting =
-      scene?.interactive &&
-      interactiveClient.handyKey &&
-      currentScript !== scene.paths.funscript;
-
-    if (scene && auto && !interactiveWaiting) {
-      start();
-    }
-  }, [
-    config?.autostartVideo,
-    initialTimestamp,
-    scene,
-    ready,
-    interactiveClient,
-    currentScript,
-    autoplay,
-    start,
-  ]);
-
-  useEffect(() => {
-    // Attach handler for onComplete event
-    const player = playerRef.current;
-    if (!player) return;
-
-    player.on("ended", () => {
-      onComplete?.();
-    });
-
-    return () => player.off("ended");
-  }, [onComplete]);
-
-  const onScrubberScrolled = () => {
-    playerRef.current?.pause();
-  };
-  const onScrubberSeek = (seconds: number) => {
-    const player = playerRef.current;
-    if (player) {
-      player.play()?.then(() => {
-        player.currentTime(seconds);
-      });
-    }
-  };
-
-  const isPortrait =
-    scene && file && file.height && file.width && file.height > file.width;
-
-  return (
-    <div className={cx("VideoPlayer", { portrait: isPortrait })}>
-      <div data-vjs-player className={cx("video-wrapper", className)}>
-        <video
-          playsInline
-          ref={videoRef}
-          id={VIDEO_PLAYER_ID}
-          className="video-js vjs-big-play-centered"
-        />
+    return (
+      <div
+        className={cx("VideoPlayer", {
+          portrait: isPortrait,
+          "no-file": !file,
+        })}
+        onKeyDownCapture={onKeyDown}
+      >
+        <div className="video-wrapper" ref={videoRef} />
+        {scene.interactive &&
+          (interactiveState !== ConnectionState.Ready ||
+            getPlayer()?.paused()) && <SceneInteractiveStatus />}
+        {file && showScrubber && (
+          <ScenePlayerScrubber
+            file={file}
+            scene={scene}
+            time={time}
+            onSeek={onScrubberSeek}
+            onScroll={onScrubberScroll}
+          />
+        )}
       </div>
-      {scene?.interactive &&
-        (interactiveState !== ConnectionState.Ready ||
-          playerRef.current?.paused()) && <SceneInteractiveStatus />}
-      {scene && file && (
-        <ScenePlayerScrubber
-          file={file}
-          scene={scene}
-          position={time}
-          onSeek={onScrubberSeek}
-          onScrolled={onScrubberScrolled}
-        />
-      )}
-    </div>
-  );
-};
+    );
+  }
+);
 
 export default ScenePlayer;

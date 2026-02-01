@@ -1,16 +1,18 @@
 import React, { useState } from "react";
 import { Accordion, Button, Card } from "react-bootstrap";
-import { FormattedMessage, FormattedNumber } from "react-intl";
-import { TruncatedText } from "src/components/Shared";
-import DeleteFilesDialog from "src/components/Shared/DeleteFilesDialog";
+import { FormattedMessage, FormattedTime } from "react-intl";
+import { TruncatedText } from "src/components/Shared/TruncatedText";
+import { DeleteFilesDialog } from "src/components/Shared/DeleteFilesDialog";
 import * as GQL from "src/core/generated-graphql";
 import { mutateImageSetPrimaryFile } from "src/core/StashService";
-import { useToast } from "src/hooks";
-import { TextUtils } from "src/utils";
-import { TextField, URLField } from "src/utils/field";
+import { useToast } from "src/hooks/Toast";
+import TextUtils from "src/utils/text";
+import { TextField, URLField, URLsField } from "src/utils/field";
+import { FileSize } from "src/components/Shared/FileSize";
+import NavUtils from "src/utils/navigation";
 
 interface IFileInfoPanelProps {
-  file: GQL.ImageFileDataFragment;
+  file: GQL.ImageFileDataFragment | GQL.VideoFileDataFragment;
   primary?: boolean;
   ofMany?: boolean;
   onSetPrimaryFile?: () => void;
@@ -21,30 +23,8 @@ interface IFileInfoPanelProps {
 const FileInfoPanel: React.FC<IFileInfoPanelProps> = (
   props: IFileInfoPanelProps
 ) => {
-  function renderFileSize() {
-    if (props.file.size === undefined) {
-      return;
-    }
-
-    const { size, unit } = TextUtils.fileSize(props.file.size ?? 0);
-
-    return (
-      <TextField id="filesize">
-        <span className="text-truncate">
-          <FormattedNumber
-            value={size}
-            // eslint-disable-next-line react/style-prop-object
-            style="unit"
-            unit={unit}
-            unitDisplay="narrow"
-            maximumFractionDigits={2}
-          />
-        </span>
-      </TextField>
-    );
-  }
-
   const checksum = props.file.fingerprints.find((f) => f.type === "md5");
+  const phash = props.file.fingerprints.find((f) => f.type === "phash");
 
   return (
     <div>
@@ -59,12 +39,32 @@ const FileInfoPanel: React.FC<IFileInfoPanelProps> = (
         )}
         <TextField id="media_info.checksum" value={checksum?.value} truncate />
         <URLField
+          id="media_info.phash"
+          abbr="Perceptual hash"
+          value={phash?.value}
+          url={NavUtils.makeImagesPHashMatchUrl(phash?.value)}
+          target="_self"
+          truncate
+          internal
+        />
+        <URLField
           id="path"
           url={`file://${props.file.path}`}
           value={`file://${props.file.path}`}
           truncate
         />
-        {renderFileSize()}
+        <TextField id="filesize">
+          <span className="text-truncate">
+            <FileSize size={props.file.size} />
+          </span>
+        </TextField>
+        <TextField id="file_mod_time">
+          <FormattedTime
+            dateStyle="medium"
+            timeStyle="medium"
+            value={props.file.mod_time ?? 0}
+          />
+        </TextField>
         <TextField
           id="dimensions"
           value={`${props.file.width} x ${props.file.height}`}
@@ -103,15 +103,23 @@ export const ImageFileInfoPanel: React.FC<IImageFileInfoPanelProps> = (
 
   const [loading, setLoading] = useState(false);
   const [deletingFile, setDeletingFile] = useState<
-    GQL.ImageFileDataFragment | undefined
+    GQL.ImageFileDataFragment | GQL.VideoFileDataFragment | undefined
   >();
 
-  if (props.image.files.length === 0) {
+  if (props.image.visual_files.length === 0) {
     return <></>;
   }
 
-  if (props.image.files.length === 1) {
-    return <FileInfoPanel file={props.image.files[0]} />;
+  if (props.image.visual_files.length === 1) {
+    return (
+      <>
+        <dl className="container image-file-info details-list">
+          <URLsField id="urls" urls={props.image.urls} truncate />
+        </dl>
+
+        <FileInfoPanel file={props.image.visual_files[0]} />
+      </>
+    );
   }
 
   async function onSetPrimaryFile(fileID: string) {
@@ -126,14 +134,14 @@ export const ImageFileInfoPanel: React.FC<IImageFileInfoPanelProps> = (
   }
 
   return (
-    <Accordion defaultActiveKey={props.image.files[0].id}>
+    <Accordion defaultActiveKey={props.image.visual_files[0].id}>
       {deletingFile && (
         <DeleteFilesDialog
           onClose={() => setDeletingFile(undefined)}
           selected={[deletingFile]}
         />
       )}
-      {props.image.files.map((file, index) => (
+      {props.image.visual_files.map((file, index) => (
         <Card key={file.id} className="image-file-card">
           <Accordion.Toggle as={Card.Header} eventKey={file.id}>
             <TruncatedText text={TextUtils.fileNameFromPath(file.path)} />

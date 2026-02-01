@@ -1,12 +1,12 @@
 import React from "react";
 import { Form } from "react-bootstrap";
 import {
-  Criterion,
+  ModifierCriterion,
   CriterionValue,
 } from "../../../models/list-filter/criteria/criterion";
 
 interface IInputFilterProps {
-  criterion: Criterion<CriterionValue>;
+  criterion: ModifierCriterion<CriterionValue>;
   onValueChanged: (value: string) => void;
 }
 
@@ -19,13 +19,15 @@ export const InputFilter: React.FC<IInputFilterProps> = ({
   }
 
   return (
-    <Form.Group>
-      <Form.Control
-        className="btn-secondary"
-        type={criterion.criterionOption.inputType}
-        onBlur={onChanged}
-        defaultValue={criterion.value ? criterion.value.toString() : ""}
-      />
-    </Form.Group>
+    <>
+      <Form.Group>
+        <Form.Control
+          className="btn-secondary"
+          type={criterion.modifierCriterionOption().inputType}
+          onChange={onChanged}
+          value={criterion.value ? criterion.value.toString() : ""}
+        />
+      </Form.Group>
+    </>
   );
 };

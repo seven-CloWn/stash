@@ -43,6 +43,9 @@ func (gp *generatedPaths) GetTmpPath(fileName string) string {
 // TempFile creates a temporary file using os.CreateTemp.
 // It is the equivalent of calling os.CreateTemp using Tmp and pattern.
 func (gp *generatedPaths) TempFile(pattern string) (*os.File, error) {
+	if err := gp.EnsureTmpDir(); err != nil {
+		logger.Warnf("Could not ensure existence of a temporary directory: %v", err)
+	}
 	return os.CreateTemp(gp.Tmp, pattern)
 }
 
@@ -76,5 +79,10 @@ func (gp *generatedPaths) TempDir(pattern string) (string, error) {
 
 func (gp *generatedPaths) GetThumbnailPath(checksum string, width int) string {
 	fname := fmt.Sprintf("%s_%d.jpg", checksum, width)
+	return filepath.Join(gp.Thumbnails, fsutil.GetIntraDir(checksum, thumbDirDepth, thumbDirLength), fname)
+}
+
+func (gp *generatedPaths) GetClipPreviewPath(checksum string, width int) string {
+	fname := fmt.Sprintf("%s_%d.webm", checksum, width)
 	return filepath.Join(gp.Thumbnails, fsutil.GetIntraDir(checksum, thumbDirDepth, thumbDirLength), fname)
 }

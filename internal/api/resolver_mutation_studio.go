@@ -2,20 +2,18 @@ package api
 
 import (
 	"context"
-	"database/sql"
+	"fmt"
 	"strconv"
-	"time"
+	"strings"
 
-	"github.com/stashapp/stash/pkg/hash/md5"
+	"github.com/stashapp/stash/pkg/models"
+	"github.com/stashapp/stash/pkg/plugin/hook"
 	"github.com/stashapp/stash/pkg/sliceutil/stringslice"
 	"github.com/stashapp/stash/pkg/studio"
-
-	"github.com/stashapp/stash/internal/manager"
-	"github.com/stashapp/stash/pkg/models"
-	"github.com/stashapp/stash/pkg/plugin"
 	"github.com/stashapp/stash/pkg/utils"
 )
 
+// used to refetch studio after hooks run
 func (r *mutationResolver) getStudio(ctx context.Context, id int) (ret *models.Studio, err error) {
 	if err := r.withTxn(ctx, func(ctx context.Context) error {
 		ret, err = r.repository.Studio.Find(ctx, id)
@@ -27,81 +25,68 @@ func (r *mutationResolver) getStudio(ctx context.Context, id int) (ret *models.S
 	return ret, nil
 }
 
-func (r *mutationResolver) StudioCreate(ctx context.Context, input StudioCreateInput) (*models.Studio, error) {
-	// generate checksum from studio name rather than image
-	checksum := md5.FromString(input.Name)
-
-	var imageData []byte
-	var err error
-
-	// Process the base 64 encoded image string
-	if input.Image != nil {
-		imageData, err = utils.ProcessImageInput(ctx, *input.Image)
-		if err != nil {
-			return nil, err
-		}
+func (r *mutationResolver) StudioCreate(ctx context.Context, input models.StudioCreateInput) (*models.Studio, error) {
+	translator := changesetTranslator{
+		inputMap: getUpdateInputMap(ctx),
 	}
 
 	// Populate a new studio from the input
-	currentTime := time.Now()
-	newStudio := models.Studio{
-		Checksum:  checksum,
-		Name:      sql.NullString{String: input.Name, Valid: true},
-		CreatedAt: models.SQLiteTimestamp{Timestamp: currentTime},
-		UpdatedAt: models.SQLiteTimestamp{Timestamp: currentTime},
-	}
+	newStudio := models.NewStudio()
+
+	newStudio.Name = strings.TrimSpace(input.Name)
+	newStudio.Rating = input.Rating100
+	newStudio.Favorite = translator.bool(input.Favorite)
+	newStudio.Details = translator.string(input.Details)
+	newStudio.IgnoreAutoTag = translator.bool(input.IgnoreAutoTag)
+	newStudio.Aliases = models.NewRelatedStrings(stringslice.TrimSpace(input.Aliases))
+	newStudio.StashIDs = models.NewRelatedStashIDs(models.StashIDInputs(input.StashIds).ToStashIDs())
+
+	var err error
+
+	newStudio.URLs = models.NewRelatedStrings([]string{})
 	if input.URL != nil {
-		newStudio.URL = sql.NullString{String: *input.URL, Valid: true}
-	}
-	if input.ParentID != nil {
-		parentID, _ := strconv.ParseInt(*input.ParentID, 10, 64)
-		newStudio.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
+		newStudio.URLs.Add(strings.TrimSpace(*input.URL))
 	}
 
-	if input.Rating != nil {
-		newStudio.Rating = sql.NullInt64{Int64: int64(*input.Rating), Valid: true}
-	} else {
-		newStudio.Rating = sql.NullInt64{Valid: false}
+	if input.Urls != nil {
+		newStudio.URLs.Add(stringslice.TrimSpace(input.Urls)...)
 	}
-	if input.Details != nil {
-		newStudio.Details = sql.NullString{String: *input.Details, Valid: true}
+
+	newStudio.ParentID, err = translator.intPtrFromString(input.ParentID)
+	if err != nil {
+		return nil, fmt.Errorf("converting parent id: %w", err)
 	}
-	if input.IgnoreAutoTag != nil {
-		newStudio.IgnoreAutoTag = *input.IgnoreAutoTag
+
+	newStudio.TagIDs, err = translator.relatedIds(input.TagIds)
+	if err != nil {
+		return nil, fmt.Errorf("converting tag ids: %w", err)
+	}
+
+	// Process the base 64 encoded image string
+	var imageData []byte
+	if input.Image != nil {
+		var err error
+		imageData, err = utils.ProcessImageInput(ctx, *input.Image)
+		if err != nil {
+			return nil, fmt.Errorf("processing image: %w", err)
+		}
 	}
 
 	// Start the transaction and save the studio
-	var s *models.Studio
 	if err := r.withTxn(ctx, func(ctx context.Context) error {
 		qb := r.repository.Studio
 
-		var err error
-		s, err = qb.Create(ctx, newStudio)
+		if err := studio.ValidateCreate(ctx, newStudio, qb); err != nil {
+			return err
+		}
+
+		err = qb.Create(ctx, &newStudio)
 		if err != nil {
 			return err
 		}
 
-		// update image table
 		if len(imageData) > 0 {
-			if err := qb.UpdateImage(ctx, s.ID, imageData); err != nil {
-				return err
-			}
-		}
-
-		// Save the stash_ids
-		if input.StashIds != nil {
-			stashIDJoins := stashIDPtrSliceToSlice(input.StashIds)
-			if err := qb.UpdateStashIDs(ctx, s.ID, stashIDJoins); err != nil {
-				return err
-			}
-		}
-
-		if len(input.Aliases) > 0 {
-			if err := studio.EnsureAliasesUnique(ctx, s.ID, input.Aliases, qb); err != nil {
-				return err
-			}
-
-			if err := qb.UpdateAliases(ctx, s.ID, input.Aliases); err != nil {
+			if err := qb.UpdateImage(ctx, newStudio.ID, imageData); err != nil {
 				return err
 			}
 		}
@@ -111,89 +96,88 @@ func (r *mutationResolver) StudioCreate(ctx context.Context, input StudioCreateI
 		return nil, err
 	}
 
-	r.hookExecutor.ExecutePostHooks(ctx, s.ID, plugin.StudioCreatePost, input, nil)
-	return r.getStudio(ctx, s.ID)
+	r.hookExecutor.ExecutePostHooks(ctx, newStudio.ID, hook.StudioCreatePost, input, nil)
+	return r.getStudio(ctx, newStudio.ID)
 }
 
-func (r *mutationResolver) StudioUpdate(ctx context.Context, input StudioUpdateInput) (*models.Studio, error) {
-	// Populate studio from the input
+func (r *mutationResolver) StudioUpdate(ctx context.Context, input models.StudioUpdateInput) (*models.Studio, error) {
 	studioID, err := strconv.Atoi(input.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("converting id: %w", err)
 	}
 
 	translator := changesetTranslator{
 		inputMap: getUpdateInputMap(ctx),
 	}
 
-	updatedStudio := models.StudioPartial{
-		ID:        studioID,
-		UpdatedAt: &models.SQLiteTimestamp{Timestamp: time.Now()},
+	// Populate studio from the input
+	updatedStudio := models.NewStudioPartial()
+
+	updatedStudio.ID = studioID
+	updatedStudio.Name = translator.optionalString(input.Name, "name")
+	updatedStudio.Details = translator.optionalString(input.Details, "details")
+	updatedStudio.Rating = translator.optionalInt(input.Rating100, "rating100")
+	updatedStudio.Favorite = translator.optionalBool(input.Favorite, "favorite")
+	updatedStudio.IgnoreAutoTag = translator.optionalBool(input.IgnoreAutoTag, "ignore_auto_tag")
+	updatedStudio.Aliases = translator.updateStrings(input.Aliases, "aliases")
+	updatedStudio.StashIDs = translator.updateStashIDs(input.StashIds, "stash_ids")
+
+	updatedStudio.ParentID, err = translator.optionalIntFromString(input.ParentID, "parent_id")
+	if err != nil {
+		return nil, fmt.Errorf("converting parent id: %w", err)
 	}
 
+	updatedStudio.TagIDs, err = translator.updateIds(input.TagIds, "tag_ids")
+	if err != nil {
+		return nil, fmt.Errorf("converting tag ids: %w", err)
+	}
+
+	if translator.hasField("urls") {
+		// ensure url not included in the input
+		if err := validateNoLegacyURLs(translator); err != nil {
+			return nil, err
+		}
+
+		updatedStudio.URLs = translator.updateStrings(input.Urls, "urls")
+	} else if translator.hasField("url") {
+		// handle legacy url field
+		legacyURLs := []string{}
+		if input.URL != nil {
+			legacyURLs = append(legacyURLs, *input.URL)
+		}
+
+		updatedStudio.URLs = &models.UpdateStrings{
+			Mode:   models.RelationshipUpdateModeSet,
+			Values: legacyURLs,
+		}
+	}
+
+	// Process the base 64 encoded image string
 	var imageData []byte
 	imageIncluded := translator.hasField("image")
 	if input.Image != nil {
 		var err error
 		imageData, err = utils.ProcessImageInput(ctx, *input.Image)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("processing image: %w", err)
 		}
 	}
-	if input.Name != nil {
-		// generate checksum from studio name rather than image
-		checksum := md5.FromString(*input.Name)
-		updatedStudio.Name = &sql.NullString{String: *input.Name, Valid: true}
-		updatedStudio.Checksum = &checksum
-	}
 
-	updatedStudio.URL = translator.nullString(input.URL, "url")
-	updatedStudio.Details = translator.nullString(input.Details, "details")
-	updatedStudio.ParentID = translator.nullInt64FromString(input.ParentID, "parent_id")
-	updatedStudio.Rating = translator.nullInt64(input.Rating, "rating")
-	updatedStudio.IgnoreAutoTag = input.IgnoreAutoTag
-
-	// Start the transaction and save the studio
-	var s *models.Studio
+	// Start the transaction and update the studio
 	if err := r.withTxn(ctx, func(ctx context.Context) error {
 		qb := r.repository.Studio
 
-		if err := manager.ValidateModifyStudio(ctx, updatedStudio, qb); err != nil {
+		if err := studio.ValidateModify(ctx, updatedStudio, qb); err != nil {
 			return err
 		}
 
-		var err error
-		s, err = qb.Update(ctx, updatedStudio)
+		_, err = qb.UpdatePartial(ctx, updatedStudio)
 		if err != nil {
 			return err
 		}
 
-		// update image table
-		if len(imageData) > 0 {
-			if err := qb.UpdateImage(ctx, s.ID, imageData); err != nil {
-				return err
-			}
-		} else if imageIncluded {
-			// must be unsetting
-			if err := qb.DestroyImage(ctx, s.ID); err != nil {
-				return err
-			}
-		}
-
-		// Save the stash_ids
-		if translator.hasField("stash_ids") {
-			stashIDJoins := stashIDPtrSliceToSlice(input.StashIds)
-			if err := qb.UpdateStashIDs(ctx, studioID, stashIDJoins); err != nil {
-				return err
-			}
-		}
-
-		if translator.hasField("aliases") {
-			if err := studio.EnsureAliasesUnique(ctx, studioID, input.Aliases, qb); err != nil {
-				return err
-			}
-
-			if err := qb.UpdateAliases(ctx, studioID, input.Aliases); err != nil {
+		if imageIncluded {
+			if err := qb.UpdateImage(ctx, studioID, imageData); err != nil {
 				return err
 			}
 		}
@@ -203,14 +187,104 @@ func (r *mutationResolver) StudioUpdate(ctx context.Context, input StudioUpdateI
 		return nil, err
 	}
 
-	r.hookExecutor.ExecutePostHooks(ctx, s.ID, plugin.StudioUpdatePost, input, translator.getFields())
-	return r.getStudio(ctx, s.ID)
+	r.hookExecutor.ExecutePostHooks(ctx, studioID, hook.StudioUpdatePost, input, translator.getFields())
+	return r.getStudio(ctx, studioID)
+}
+
+func (r *mutationResolver) BulkStudioUpdate(ctx context.Context, input BulkStudioUpdateInput) ([]*models.Studio, error) {
+	ids, err := stringslice.StringSliceToIntSlice(input.Ids)
+	if err != nil {
+		return nil, fmt.Errorf("converting ids: %w", err)
+	}
+
+	translator := changesetTranslator{
+		inputMap: getUpdateInputMap(ctx),
+	}
+
+	// Populate performer from the input
+	partial := models.NewStudioPartial()
+
+	partial.ParentID, err = translator.optionalIntFromString(input.ParentID, "parent_id")
+	if err != nil {
+		return nil, fmt.Errorf("converting parent id: %w", err)
+	}
+
+	if translator.hasField("urls") {
+		// ensure url/twitter/instagram are not included in the input
+		if err := validateNoLegacyURLs(translator); err != nil {
+			return nil, err
+		}
+
+		partial.URLs = translator.updateStringsBulk(input.Urls, "urls")
+	} else if translator.hasField("url") {
+		// handle legacy url field
+		legacyURLs := []string{}
+		if input.URL != nil {
+			legacyURLs = append(legacyURLs, *input.URL)
+		}
+
+		partial.URLs = &models.UpdateStrings{
+			Mode:   models.RelationshipUpdateModeSet,
+			Values: legacyURLs,
+		}
+	}
+
+	partial.Favorite = translator.optionalBool(input.Favorite, "favorite")
+	partial.Rating = translator.optionalInt(input.Rating100, "rating100")
+	partial.Details = translator.optionalString(input.Details, "details")
+	partial.IgnoreAutoTag = translator.optionalBool(input.IgnoreAutoTag, "ignore_auto_tag")
+
+	partial.TagIDs, err = translator.updateIdsBulk(input.TagIds, "tag_ids")
+	if err != nil {
+		return nil, fmt.Errorf("converting tag ids: %w", err)
+	}
+
+	ret := []*models.Studio{}
+
+	// Start the transaction and save the performers
+	if err := r.withTxn(ctx, func(ctx context.Context) error {
+		qb := r.repository.Studio
+
+		for _, id := range ids {
+			local := partial
+			local.ID = id
+			if err := studio.ValidateModify(ctx, local, qb); err != nil {
+				return err
+			}
+
+			updated, err := qb.UpdatePartial(ctx, local)
+			if err != nil {
+				return err
+			}
+
+			ret = append(ret, updated)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	// execute post hooks outside of txn
+	var newRet []*models.Studio
+	for _, studio := range ret {
+		r.hookExecutor.ExecutePostHooks(ctx, studio.ID, hook.StudioUpdatePost, input, translator.getFields())
+
+		studio, err = r.getStudio(ctx, studio.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		newRet = append(newRet, studio)
+	}
+
+	return newRet, nil
 }
 
 func (r *mutationResolver) StudioDestroy(ctx context.Context, input StudioDestroyInput) (bool, error) {
 	id, err := strconv.Atoi(input.ID)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("converting id: %w", err)
 	}
 
 	if err := r.withTxn(ctx, func(ctx context.Context) error {
@@ -219,7 +293,7 @@ func (r *mutationResolver) StudioDestroy(ctx context.Context, input StudioDestro
 		return false, err
 	}
 
-	r.hookExecutor.ExecutePostHooks(ctx, id, plugin.StudioDestroyPost, input, nil)
+	r.hookExecutor.ExecutePostHooks(ctx, id, hook.StudioDestroyPost, input, nil)
 
 	return true, nil
 }
@@ -227,7 +301,7 @@ func (r *mutationResolver) StudioDestroy(ctx context.Context, input StudioDestro
 func (r *mutationResolver) StudiosDestroy(ctx context.Context, studioIDs []string) (bool, error) {
 	ids, err := stringslice.StringSliceToIntSlice(studioIDs)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("converting ids: %w", err)
 	}
 
 	if err := r.withTxn(ctx, func(ctx context.Context) error {
@@ -244,7 +318,7 @@ func (r *mutationResolver) StudiosDestroy(ctx context.Context, studioIDs []strin
 	}
 
 	for _, id := range ids {
-		r.hookExecutor.ExecutePostHooks(ctx, id, plugin.StudioDestroyPost, studioIDs, nil)
+		r.hookExecutor.ExecutePostHooks(ctx, id, hook.StudioDestroyPost, studioIDs, nil)
 	}
 
 	return true, nil

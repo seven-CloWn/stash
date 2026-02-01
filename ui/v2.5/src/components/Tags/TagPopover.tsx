@@ -1,17 +1,18 @@
 import React from "react";
-import { ErrorMessage, LoadingIndicator } from "../Shared";
-import { HoverPopover } from "src/components/Shared";
+import { ErrorMessage } from "../Shared/ErrorMessage";
+import { LoadingIndicator } from "../Shared/LoadingIndicator";
+import { HoverPopover } from "../Shared/HoverPopover";
 import { useFindTag } from "../../core/StashService";
 import { TagCard } from "./TagCard";
-import { ConfigurationContext } from "../../hooks/Config";
-import { IUIConfig } from "src/core/config";
+import { useConfigurationContext } from "../../hooks/Config";
+import { Placement } from "react-bootstrap/esm/Overlay";
 
-interface ITagPopoverProps {
-  id?: string;
+interface ITagPopoverCardProps {
+  id: string;
 }
 
 export const TagPopoverCard: React.FC<ITagPopoverCardProps> = ({ id }) => {
-  const { data, loading, error } = useFindTag(id ?? "");
+  const { data, loading, error } = useFindTag(id);
 
   if (loading)
     return (
@@ -32,19 +33,32 @@ export const TagPopoverCard: React.FC<ITagPopoverCardProps> = ({ id }) => {
   );
 };
 
-export const TagPopover: React.FC<ITagPopoverProps> = ({ id, children }) => {
-  const { configuration: config } = React.useContext(ConfigurationContext);
+interface ITagPopoverProps {
+  id: string;
+  hide?: boolean;
+  placement?: Placement;
+  target?: React.RefObject<HTMLElement>;
+}
 
-  const showTagCardOnHover =
-    (config?.ui as IUIConfig)?.showTagCardOnHover ?? true;
+export const TagPopover: React.FC<ITagPopoverProps> = ({
+  id,
+  hide,
+  children,
+  placement = "top",
+  target,
+}) => {
+  const { configuration: config } = useConfigurationContext();
 
-  if (!id || !showTagCardOnHover) {
+  const showTagCardOnHover = config?.ui.showTagCardOnHover ?? true;
+
+  if (hide || !showTagCardOnHover) {
     return <>{children}</>;
   }
 
   return (
     <HoverPopover
-      placement={"top"}
+      target={target}
+      placement={placement}
       enterDelay={500}
       leaveDelay={100}
       content={<TagPopoverCard id={id} />}
@@ -53,7 +67,3 @@ export const TagPopover: React.FC<ITagPopoverProps> = ({ id, children }) => {
     </HoverPopover>
   );
 };
-
-interface ITagPopoverCardProps {
-  id?: string;
-}

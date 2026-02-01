@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stashapp/stash/pkg/file"
+	"github.com/stashapp/stash/pkg/models"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
-	invalidFolderID = file.FolderID(invalidID)
-	invalidFileID   = file.ID(invalidID)
+	invalidFolderID = models.FolderID(invalidID)
+	invalidFileID   = models.FileID(invalidID)
 )
 
 func Test_FolderStore_Create(t *testing.T) {
@@ -28,13 +28,13 @@ func Test_FolderStore_Create(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		newObject file.Folder
+		newObject models.Folder
 		wantErr   bool
 	}{
 		{
 			"full",
-			file.Folder{
-				DirEntry: file.DirEntry{
+			models.Folder{
+				DirEntry: models.DirEntry{
 					ZipFileID: &fileIDs[fileIdxZip],
 					ZipFile:   makeZipFileWithID(fileIdxZip),
 					ModTime:   fileModTime,
@@ -47,7 +47,7 @@ func Test_FolderStore_Create(t *testing.T) {
 		},
 		{
 			"invalid parent folder id",
-			file.Folder{
+			models.Folder{
 				Path:           path,
 				ParentFolderID: &invalidFolderID,
 			},
@@ -55,8 +55,8 @@ func Test_FolderStore_Create(t *testing.T) {
 		},
 		{
 			"invalid zip file id",
-			file.Folder{
-				DirEntry: file.DirEntry{
+			models.Folder{
+				DirEntry: models.DirEntry{
 					ZipFileID: &invalidFileID,
 				},
 				Path: path,
@@ -89,7 +89,7 @@ func Test_FolderStore_Create(t *testing.T) {
 			assert.Equal(copy, s)
 
 			// ensure can find the folder
-			found, err := qb.FindByPath(ctx, path)
+			found, err := qb.FindByPath(ctx, path, true)
 			if err != nil {
 				t.Errorf("FolderStore.Find() error = %v", err)
 			}
@@ -109,14 +109,14 @@ func Test_FolderStore_Update(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		updatedObject *file.Folder
+		updatedObject *models.Folder
 		wantErr       bool
 	}{
 		{
 			"full",
-			&file.Folder{
+			&models.Folder{
 				ID: folderIDs[folderIdxWithParentFolder],
-				DirEntry: file.DirEntry{
+				DirEntry: models.DirEntry{
 					ZipFileID: &fileIDs[fileIdxZip],
 					ZipFile:   makeZipFileWithID(fileIdxZip),
 					ModTime:   fileModTime,
@@ -129,7 +129,7 @@ func Test_FolderStore_Update(t *testing.T) {
 		},
 		{
 			"clear zip",
-			&file.Folder{
+			&models.Folder{
 				ID:   folderIDs[folderIdxInZip],
 				Path: path,
 			},
@@ -137,7 +137,7 @@ func Test_FolderStore_Update(t *testing.T) {
 		},
 		{
 			"clear folder",
-			&file.Folder{
+			&models.Folder{
 				ID:   folderIDs[folderIdxWithParentFolder],
 				Path: path,
 			},
@@ -145,7 +145,7 @@ func Test_FolderStore_Update(t *testing.T) {
 		},
 		{
 			"invalid parent folder id",
-			&file.Folder{
+			&models.Folder{
 				ID:             folderIDs[folderIdxWithParentFolder],
 				Path:           path,
 				ParentFolderID: &invalidFolderID,
@@ -154,9 +154,9 @@ func Test_FolderStore_Update(t *testing.T) {
 		},
 		{
 			"invalid zip file id",
-			&file.Folder{
+			&models.Folder{
 				ID: folderIDs[folderIdxWithParentFolder],
-				DirEntry: file.DirEntry{
+				DirEntry: models.DirEntry{
 					ZipFileID: &invalidFileID,
 				},
 				Path: path,
@@ -180,7 +180,7 @@ func Test_FolderStore_Update(t *testing.T) {
 				return
 			}
 
-			s, err := qb.FindByPath(ctx, path)
+			s, err := qb.FindByPath(ctx, path, true)
 			if err != nil {
 				t.Errorf("FolderStore.Find() error = %v", err)
 			}
@@ -192,7 +192,7 @@ func Test_FolderStore_Update(t *testing.T) {
 	}
 }
 
-func makeFolderWithID(index int) *file.Folder {
+func makeFolderWithID(index int) *models.Folder {
 	ret := makeFolder(index)
 	ret.ID = folderIDs[index]
 
@@ -207,7 +207,7 @@ func Test_FolderStore_FindByPath(t *testing.T) {
 	tests := []struct {
 		name    string
 		path    string
-		want    *file.Folder
+		want    *models.Folder
 		wantErr bool
 	}{
 		{
@@ -228,7 +228,7 @@ func Test_FolderStore_FindByPath(t *testing.T) {
 
 	for _, tt := range tests {
 		runWithRollbackTxn(t, tt.name, func(t *testing.T, ctx context.Context) {
-			got, err := qb.FindByPath(ctx, tt.path)
+			got, err := qb.FindByPath(ctx, tt.path, true)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("FolderStore.FindByPath() error = %v, wantErr %v", err, tt.wantErr)
 				return

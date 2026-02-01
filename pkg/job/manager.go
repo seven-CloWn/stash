@@ -178,7 +178,8 @@ func (m *Manager) dispatch(ctx context.Context, j *Job) (done chan struct{}) {
 	j.StartTime = &t
 	j.Status = StatusRunning
 
-	ctx, cancelFunc := context.WithCancel(valueOnlyContext{ctx})
+	// create a cancellable context for the job that is not canceled by the outer context
+	ctx, cancelFunc := context.WithCancel(context.WithoutCancel(ctx))
 	j.cancelFunc = cancelFunc
 
 	done = make(chan struct{})
@@ -205,7 +206,10 @@ func (m *Manager) executeJob(ctx context.Context, j *Job, done chan struct{}) {
 	}()
 
 	progress := m.newProgress(j)
-	j.exec.Execute(ctx, progress)
+	if err := j.exec.Execute(ctx, progress); err != nil {
+		logger.Errorf("task failed due to error: %v", err)
+		j.error(err)
+	}
 }
 
 func (m *Manager) onJobFinish(job *Job) {

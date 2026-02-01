@@ -5,6 +5,7 @@ import {
   CsvUploadResponse,
   HandyFirmwareStatus,
 } from "thehandy/lib/types";
+import { IDeviceSettings } from "./utils";
 
 interface IFunscript {
   actions: Array<IAction>;
@@ -97,13 +98,22 @@ export class Interactive {
   _playing: boolean;
   _scriptOffset: number;
   _handy: Handy;
+  _useStashHostedFunscript: boolean;
 
   constructor(handyKey: string, scriptOffset: number) {
     this._handy = new Handy();
     this._handy.connectionKey = handyKey;
     this._scriptOffset = scriptOffset;
+    this._useStashHostedFunscript = false;
     this._connected = false;
     this._playing = false;
+  }
+
+  get connected() {
+    return this._connected;
+  }
+  get playing() {
+    return this._playing;
   }
 
   async connect() {
@@ -127,28 +137,51 @@ export class Interactive {
     return this._handy.connectionKey;
   }
 
+  set useStashHostedFunscript(useStashHostedFunscript: boolean) {
+    this._useStashHostedFunscript = useStashHostedFunscript;
+  }
+
+  get useStashHostedFunscript(): boolean {
+    return this._useStashHostedFunscript;
+  }
+
   set scriptOffset(offset: number) {
     this._scriptOffset = offset;
   }
 
-  async uploadScript(funscriptPath: string) {
+  async uploadScript(funscriptPath: string, apiKey?: string) {
     if (!(this._handy.connectionKey && funscriptPath)) {
       return;
     }
 
-    const csv = await fetch(funscriptPath)
-      .then((response) => response.json())
-      .then((json) => convertFunscriptToCSV(json));
-    const fileName = `${Math.round(Math.random() * 100000000)}.csv`;
-    const csvFile = new File([csv], fileName);
+    var funscriptUrl;
 
-    const tempURL = await uploadCsv(csvFile).then((response) => response.url);
+    if (this._useStashHostedFunscript) {
+      funscriptUrl = funscriptPath.replace("/funscript", "/interactive_csv");
+      if (typeof apiKey !== "undefined" && apiKey !== "") {
+        var url = new URL(funscriptUrl);
+        url.searchParams.append("apikey", apiKey);
+        funscriptUrl = url.toString();
+      }
+    } else {
+      const csv = await fetch(funscriptPath)
+        .then((response) => response.json())
+        .then((json) => convertFunscriptToCSV(json));
+      const fileName = `${Math.round(Math.random() * 100000000)}.csv`;
+      const csvFile = new File([csv], fileName);
+
+      funscriptUrl = await uploadCsv(csvFile).then((response) => response.url);
+    }
 
     await this._handy.setMode(HandyMode.hssp);
 
     this._connected = await this._handy
-      .setHsspSetup(tempURL)
+      .setHsspSetup(funscriptUrl)
       .then((result) => result === HsspSetupResult.downloaded);
+
+    // for some reason we need to call getStatus after setup to ensure proper state
+    // see https://github.com/defucilis/thehandy/issues/3
+    await this._handy.getStatus();
   }
 
   async sync() {
@@ -157,6 +190,15 @@ export class Interactive {
 
   setServerTimeOffset(offset: number) {
     this._handy.estimatedServerTimeOffset = offset;
+  }
+
+  async configure(config: Partial<IDeviceSettings>) {
+    this._scriptOffset = config.scriptOffset ?? this._scriptOffset;
+    this.handyKey = config.connectionKey ?? this.handyKey;
+    this._handy.estimatedServerTimeOffset =
+      config.estimatedServerTimeOffset ?? this._handy.estimatedServerTimeOffset;
+    this.useStashHostedFunscript =
+      config.useStashHostedFunscript ?? this.useStashHostedFunscript;
   }
 
   async play(position: number) {

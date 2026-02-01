@@ -3,15 +3,22 @@ import {
   createMandatoryNumberCriterionOption,
   createStringCriterionOption,
   createBooleanCriterionOption,
+  createDateCriterionOption,
+  createMandatoryTimestampCriterionOption,
 } from "./criteria/criterion";
-import { FavoriteCriterionOption } from "./criteria/favorite";
+import { FavoritePerformerCriterionOption } from "./criteria/favorite";
 import { GenderCriterionOption } from "./criteria/gender";
+import { CircumcisedCriterionOption } from "./criteria/circumcised";
 import { PerformerIsMissingCriterionOption } from "./criteria/is-missing";
-import { RatingCriterionOption } from "./criteria/rating";
+import { StashIDCriterionOption } from "./criteria/stash-ids";
 import { StudiosCriterionOption } from "./criteria/studios";
 import { TagsCriterionOption } from "./criteria/tags";
 import { ListFilterOptions } from "./filter-options";
 import { CriterionType, DisplayMode } from "./types";
+import { CountryCriterionOption } from "./criteria/country";
+import { RatingCriterionOption } from "./criteria/rating";
+import { CustomFieldsCriterionOption } from "./criteria/custom-fields";
+import { GroupsCriterionOption } from "./criteria/groups";
 
 const defaultSortBy = "name";
 const sortByOptions = [
@@ -21,6 +28,14 @@ const sortByOptions = [
   "tag_count",
   "random",
   "rating",
+  "penis_length",
+  "play_count",
+  "last_played_at",
+  "latest_scene",
+  "career_length",
+  "weight",
+  "measurements",
+  "scenes_duration",
 ]
   .map(ListFilterOptions.createSortBy)
   .concat([
@@ -36,6 +51,16 @@ const sortByOptions = [
       messageID: "gallery_count",
       value: "galleries_count",
     },
+    {
+      messageID: "o_count",
+      value: "o_counter",
+      sfwMessageID: "o_count_sfw",
+    },
+    {
+      messageID: "last_o_at",
+      value: "last_o_at",
+      sfwMessageID: "last_o_at_sfw",
+    },
   ]);
 
 const displayModeOptions = [
@@ -49,40 +74,53 @@ const numberCriteria: CriterionType[] = [
   "death_year",
   "age",
   "weight",
+  "penis_length",
 ];
 
 const stringCriteria: CriterionType[] = [
   "name",
+  "disambiguation",
   "details",
   "ethnicity",
-  "country",
   "hair_color",
   "eye_color",
-  "height",
   "measurements",
   "fake_tits",
   "career_length",
   "tattoos",
   "piercings",
   "aliases",
-  "stash_id",
 ];
 
 const criterionOptions = [
-  FavoriteCriterionOption,
+  FavoritePerformerCriterionOption,
   GenderCriterionOption,
+  CircumcisedCriterionOption,
   PerformerIsMissingCriterionOption,
   TagsCriterionOption,
-  RatingCriterionOption,
+  GroupsCriterionOption,
   StudiosCriterionOption,
+  StashIDCriterionOption,
   createStringCriterionOption("url"),
+  RatingCriterionOption,
   createMandatoryNumberCriterionOption("tag_count"),
   createMandatoryNumberCriterionOption("scene_count"),
   createMandatoryNumberCriterionOption("image_count"),
   createMandatoryNumberCriterionOption("gallery_count"),
+  createMandatoryNumberCriterionOption("play_count"),
+  createMandatoryNumberCriterionOption("o_counter", "o_count", {
+    sfwMessageID: "o_count_sfw",
+  }),
   createBooleanCriterionOption("ignore_auto_tag"),
+  CountryCriterionOption,
+  createNumberCriterionOption("height_cm", "height"),
   ...numberCriteria.map((c) => createNumberCriterionOption(c)),
   ...stringCriteria.map((c) => createStringCriterionOption(c)),
+  createDateCriterionOption("birthdate"),
+  createDateCriterionOption("death_date"),
+  createMandatoryTimestampCriterionOption("created_at"),
+  createMandatoryTimestampCriterionOption("updated_at"),
+  CustomFieldsCriterionOption,
 ];
 export const PerformerListFilterOptions = new ListFilterOptions(
   defaultSortBy,

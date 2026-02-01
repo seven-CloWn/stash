@@ -5,26 +5,49 @@ import { FormattedMessage, useIntl } from "react-intl";
 import uniq from "lodash-es/uniq";
 import { blobToBase64 } from "base64-blob";
 import { distance } from "src/utils/hamming";
+import { faCheckCircle } from "@fortawesome/free-regular-svg-icons";
+import {
+  faLink,
+  faPlus,
+  faTriangleExclamation,
+  faXmark,
+} from "@fortawesome/free-solid-svg-icons";
 
 import * as GQL from "src/core/generated-graphql";
-import {
-  HoverPopover,
-  Icon,
-  LoadingIndicator,
-  SuccessIcon,
-  TagSelect,
-  TruncatedText,
-  OperationButton,
-} from "src/components/Shared";
-import { FormUtils } from "src/utils";
-import { stringToGender } from "src/utils/gender";
+import { HoverPopover } from "src/components/Shared/HoverPopover";
+import { Icon } from "src/components/Shared/Icon";
+import { SuccessIcon } from "src/components/Shared/SuccessIcon";
+import { LoadingIndicator } from "src/components/Shared/LoadingIndicator";
+import { TagSelect } from "src/components/Shared/Select";
+import { TruncatedText } from "src/components/Shared/TruncatedText";
+import { OperationButton } from "src/components/Shared/OperationButton";
+import * as FormUtils from "src/utils/form";
+import { genderList, stringToGender } from "src/utils/gender";
 import { IScrapedScene, TaggerStateContext } from "../context";
 import { OptionalField } from "../IncludeButton";
 import { SceneTaggerModalsState } from "./sceneTaggerModals";
 import PerformerResult from "./PerformerResult";
 import StudioResult from "./StudioResult";
 import { useInitialState } from "src/hooks/state";
-import { faPlus } from "@fortawesome/free-solid-svg-icons";
+import { getStashboxBase } from "src/utils/stashbox";
+import { ExternalLink } from "src/components/Shared/ExternalLink";
+import { compareScenesForSort } from "./utils";
+
+const getDurationIcon = (matchPercentage: number) => {
+  if (matchPercentage > 65)
+    return (
+      <Icon className="SceneTaggerIcon text-success" icon={faCheckCircle} />
+    );
+  if (matchPercentage > 35)
+    return (
+      <Icon
+        className="SceneTaggerIcon text-warning"
+        icon={faTriangleExclamation}
+      />
+    );
+
+  return <Icon className="SceneTaggerIcon text-danger" icon={faXmark} />;
+};
 
 const getDurationStatus = (
   scene: IScrapedScene,
@@ -52,10 +75,12 @@ const getDurationStatus = (
   else if (scene.duration && Math.abs(scene.duration - stashDuration) < 5)
     match = <FormattedMessage id="component_tagger.results.fp_matches" />;
 
+  const matchPercentage = (matchCount / durations.length) * 100;
+
   if (match)
     return (
       <div className="font-weight-bold">
-        <SuccessIcon className="mr-2" />
+        {getDurationIcon(matchPercentage)}
         {match}
       </div>
     );
@@ -146,7 +171,7 @@ const getFingerprintStatus = (
       <div>
         {phashMatches.length > 0 && (
           <div className="font-weight-bold">
-            <SuccessIcon className="mr-2" />
+            <SuccessIcon className="SceneTaggerIcon" />
             <HoverPopover
               placement="bottom"
               content={phashList}
@@ -206,28 +231,27 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     createNewPerformer,
     linkPerformer,
     createNewStudio,
+    updateStudio,
     linkStudio,
+    updateTag,
     resolveScene,
     currentSource,
     saveScene,
   } = React.useContext(TaggerStateContext);
 
+  const performerGenders = config.performerGenders || genderList;
+
   const performers = useMemo(
     () =>
       scene.performers?.filter((p) => {
-        if (!config.showMales) {
-          return (
-            !p.gender || stringToGender(p.gender, true) !== GQL.GenderEnum.Male
-          );
-        }
-        return true;
+        const gender = p.gender ? stringToGender(p.gender, true) : undefined;
+        return !gender || performerGenders.includes(gender);
       }) ?? [],
-    [config, scene]
+    [scene, performerGenders]
   );
 
-  const { createPerformerModal, createStudioModal } = React.useContext(
-    SceneTaggerModalsState
-  );
+  const { createPerformerModal, createStudioModal, createTagModal } =
+    React.useContext(SceneTaggerModalsState);
 
   const getInitialTags = useCallback(() => {
     const stashSceneTags = stashScene.tags.map((t) => t.id);
@@ -267,25 +291,24 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
   );
 
   // map of original performer to id
-  const [performerIDs, setPerformerIDs] = useState<(string | undefined)[]>(
-    getInitialPerformers()
-  );
+  const [performerIDs, setPerformerIDs, setInitialPerformerIDs] =
+    useInitialState<(string | undefined)[]>(getInitialPerformers());
 
-  const [studioID, setStudioID] = useState<string | undefined>(
-    getInitialStudio()
-  );
+  const [studioID, setStudioID, setInitialStudioID] = useInitialState<
+    string | undefined
+  >(getInitialStudio());
 
   useEffect(() => {
     setInitialTagIDs(getInitialTags());
   }, [getInitialTags, setInitialTagIDs]);
 
   useEffect(() => {
-    setPerformerIDs(getInitialPerformers());
-  }, [getInitialPerformers]);
+    setInitialPerformerIDs(getInitialPerformers());
+  }, [getInitialPerformers, setInitialPerformerIDs]);
 
   useEffect(() => {
-    setStudioID(getInitialStudio());
-  }, [getInitialStudio]);
+    setInitialStudioID(getInitialStudio());
+  }, [getInitialStudio, setInitialStudioID]);
 
   useEffect(() => {
     async function doResolveScene() {
@@ -302,13 +325,14 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     }
   }, [isActive, loading, stashScene, index, resolveScene, scene]);
 
+  const stashBoxBaseURL = currentSource?.sourceInput.stash_box_endpoint
+    ? getStashboxBase(currentSource.sourceInput.stash_box_endpoint)
+    : undefined;
   const stashBoxURL = useMemo(() => {
-    if (currentSource?.stashboxEndpoint && scene.remote_site_id) {
-      const endpoint = currentSource.stashboxEndpoint;
-      const endpointBase = endpoint.match(/https?:\/\/.*?\//)?.[0];
-      return `${endpointBase}scenes/${scene.remote_site_id}`;
+    if (stashBoxBaseURL) {
+      return `${stashBoxBaseURL}scenes/${scene.remote_site_id}`;
     }
-  }, [currentSource, scene]);
+  }, [scene, stashBoxBaseURL]);
 
   const setExcludedField = (name: string, value: boolean) =>
     setExcludedFields({
@@ -362,16 +386,23 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
       ),
       studio_id: studioID,
       cover_image: resolveField("cover_image", undefined, imgData),
-      url: resolveField("url", stashScene.url, scene.url),
       tag_ids: tagIDs,
       stash_ids: stashScene.stash_ids ?? [],
+      code: resolveField("code", stashScene.code, scene.code),
+      director: resolveField("director", stashScene.director, scene.director),
     };
 
-    const includeStashID = !excludedFieldList.includes("stash_ids");
+    const includeUrl = !excludedFieldList.includes("url");
+    if (includeUrl && scene.urls) {
+      sceneCreateInput.urls = uniq(stashScene.urls.concat(scene.urls));
+    } else {
+      sceneCreateInput.urls = stashScene.urls;
+    }
 
+    const includeStashID = !excludedFieldList.includes("stash_ids");
     if (
       includeStashID &&
-      currentSource?.stashboxEndpoint &&
+      currentSource?.sourceInput.stash_box_endpoint &&
       scene.remote_site_id
     ) {
       sceneCreateInput.stash_ids = [
@@ -380,12 +411,16 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
             return {
               endpoint: s.endpoint,
               stash_id: s.stash_id,
+              updated_at: s.updated_at,
             };
           })
-          .filter((s) => s.endpoint !== currentSource.stashboxEndpoint) ?? []),
+          .filter(
+            (s) => s.endpoint !== currentSource.sourceInput.stash_box_endpoint
+          ) ?? []),
         {
-          endpoint: currentSource.stashboxEndpoint,
+          endpoint: currentSource.sourceInput.stash_box_endpoint,
           stash_id: scene.remote_site_id,
+          updated_at: new Date().toISOString(),
         },
       ];
     } else {
@@ -396,26 +431,82 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     await saveScene(sceneCreateInput, includeStashID);
   }
 
-  function performerModalCallback(
-    toCreate?: GQL.PerformerCreateInput | undefined
+  function showPerformerModal(t: GQL.ScrapedPerformer) {
+    createPerformerModal(t, (toCreate) => {
+      if (toCreate) {
+        createNewPerformer(t, toCreate);
+      }
+    });
+  }
+
+  async function onCreateTag(
+    t: GQL.ScrapedTag,
+    createInput?: GQL.TagCreateInput
   ) {
-    if (toCreate) {
-      createNewPerformer(toCreate);
+    const toCreate: GQL.TagCreateInput = createInput ?? { name: t.name };
+
+    // If the tag has a remote_site_id and we have an endpoint, include the stash_id
+    const endpoint = currentSource?.sourceInput.stash_box_endpoint;
+    if (!createInput && t.remote_site_id && endpoint) {
+      toCreate.stash_ids = [
+        {
+          endpoint: endpoint,
+          stash_id: t.remote_site_id,
+        },
+      ];
+    }
+
+    const newTagID = await createNewTag(t, toCreate);
+    if (newTagID !== undefined) {
+      setTagIDs([...tagIDs, newTagID]);
     }
   }
 
-  function showPerformerModal(t: GQL.ScrapedPerformer) {
-    createPerformerModal(t, performerModalCallback);
+  async function onUpdateTag(
+    t: GQL.ScrapedTag,
+    updateInput: GQL.TagUpdateInput
+  ) {
+    await updateTag(t, updateInput);
+    setTagIDs(uniq([...tagIDs, updateInput.id]));
   }
 
-  function studioModalCallback(toCreate?: GQL.StudioCreateInput | undefined) {
+  function showTagModal(t: GQL.ScrapedTag) {
+    createTagModal(t, (result) => {
+      if (result.create) {
+        onCreateTag(t, result.create);
+      } else if (result.update) {
+        onUpdateTag(t, result.update);
+      }
+    });
+  }
+
+  async function studioModalCallback(
+    studio: GQL.ScrapedStudio,
+    toCreate?: GQL.StudioCreateInput,
+    parentInput?: GQL.StudioCreateInput
+  ) {
     if (toCreate) {
-      createNewStudio(toCreate);
+      if (parentInput && studio.parent) {
+        if (toCreate.parent_id) {
+          const parentUpdateData: GQL.StudioUpdateInput = {
+            ...parentInput,
+            id: toCreate.parent_id,
+          };
+          await updateStudio(parentUpdateData);
+        } else {
+          const parentID = await createNewStudio(studio.parent, parentInput);
+          toCreate.parent_id = parentID;
+        }
+      }
+
+      createNewStudio(studio, toCreate);
     }
   }
 
   function showStudioModal(t: GQL.ScrapedStudio) {
-    createStudioModal(t, studioModalCallback);
+    createStudioModal(t, (toCreate, parentInput) => {
+      studioModalCallback(t, toCreate, parentInput);
+    });
   }
 
   // constants to get around dot-notation eslint rule
@@ -427,6 +518,8 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     details: "details",
     studio: "studio",
     stash_ids: "stash_ids",
+    code: "code",
+    director: "director",
   };
 
   const maybeRenderCoverImage = () => {
@@ -460,15 +553,12 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
       );
     }
 
-    const sceneTitleEl = scene.url ? (
-      <a
-        href={scene.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="scene-link"
-      >
+    const url = scene.urls?.length ? scene.urls[0] : null;
+
+    const sceneTitleEl = url ? (
+      <ExternalLink className="scene-link" href={url}>
         <TruncatedText text={scene.title} />
-      </a>
+      </ExternalLink>
     ) : (
       <TruncatedText text={scene.title} />
     );
@@ -510,6 +600,21 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     }
   };
 
+  const maybeRenderStudioCode = () => {
+    if (isActive && scene.code) {
+      return (
+        <h5>
+          <OptionalField
+            exclude={excludedFields[fields.code]}
+            setExclude={(v) => setExcludedField(fields.code, v)}
+          >
+            {scene.code}
+          </OptionalField>
+        </h5>
+      );
+    }
+  };
+
   const maybeRenderDateField = () => {
     if (isActive && scene.date) {
       return (
@@ -525,17 +630,34 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     }
   };
 
+  const maybeRenderDirector = () => {
+    if (scene.director) {
+      return (
+        <h5>
+          <OptionalField
+            exclude={excludedFields[fields.director]}
+            setExclude={(v) => setExcludedField(fields.director, v)}
+          >
+            <FormattedMessage id="director" />: {scene.director}
+          </OptionalField>
+        </h5>
+      );
+    }
+  };
+
   const maybeRenderURL = () => {
-    if (scene.url) {
+    if (scene.urls) {
       return (
         <div className="scene-details">
           <OptionalField
             exclude={excludedFields[fields.url]}
             setExclude={(v) => setExcludedField(fields.url, v)}
           >
-            <a href={scene.url} target="_blank" rel="noopener noreferrer">
-              {scene.url}
-            </a>
+            {scene.urls.map((url) => (
+              <div key={url}>
+                <ExternalLink href={url}>{url}</ExternalLink>
+              </div>
+            ))}
           </OptionalField>
         </div>
       );
@@ -565,9 +687,9 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
             exclude={excludedFields[fields.stash_ids]}
             setExclude={(v) => setExcludedField(fields.stash_ids, v)}
           >
-            <a href={stashBoxURL} target="_blank" rel="noopener noreferrer">
+            <ExternalLink href={stashBoxURL}>
               {scene.remote_site_id}
-            </a>
+            </ExternalLink>
           </OptionalField>
         </div>
       );
@@ -583,7 +705,9 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
             selectedID={studioID}
             setSelectedID={(id) => setStudioID(id)}
             onCreate={() => showStudioModal(scene.studio!)}
-            endpoint={currentSource?.stashboxEndpoint}
+            endpoint={
+              currentSource?.sourceInput.stash_box_endpoint ?? undefined
+            }
             onLink={async () => {
               await linkStudio(scene.studio!, studioID!);
             }}
@@ -612,8 +736,15 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
               onLink={async () => {
                 await linkPerformer(performer, performerIDs[performerIndex]!);
               }}
-              endpoint={currentSource?.stashboxEndpoint}
+              endpoint={
+                currentSource?.sourceInput.stash_box_endpoint ?? undefined
+              }
               key={`${performer.name ?? performer.remote_site_id ?? ""}`}
+              ageFromDate={
+                !scene.date || excludedFields.date
+                  ? stashScene.date
+                  : scene.date
+              }
             />
           ))}
         </Form.Group>
@@ -621,34 +752,30 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
     </div>
   );
 
-  async function onCreateTag(t: GQL.ScrapedTag) {
-    const newTagID = await createNewTag(t);
-    if (newTagID !== undefined) {
-      setTagIDs([...tagIDs, newTagID]);
-    }
-  }
+  function maybeRenderTagsField() {
+    if (!config.setTags) return;
 
-  const renderTagsField = () => (
-    <div className="mt-2">
-      <div>
-        <Form.Group controlId="tags" as={Row}>
-          {FormUtils.renderLabel({
-            title: `${intl.formatMessage({ id: "tags" })}:`,
-          })}
-          <Col sm={9} xl={12}>
-            <TagSelect
-              isMulti
-              onSelect={(items) => {
-                setTagIDs(items.map((i) => i.id));
-              }}
-              ids={tagIDs}
-            />
-          </Col>
-        </Form.Group>
-      </div>
-      {scene.tags
-        ?.filter((t) => !t.stored_id)
-        .map((t) => (
+    const createTags = scene.tags?.filter((t) => !t.stored_id);
+
+    return (
+      <div className="mt-2">
+        <div>
+          <Form.Group controlId="tags" as={Row}>
+            {FormUtils.renderLabel({
+              title: `${intl.formatMessage({ id: "tags" })}:`,
+            })}
+            <Col sm={9} xl={12}>
+              <TagSelect
+                isMulti
+                onSelect={(items) => {
+                  setTagIDs(items.map((i) => i.id));
+                }}
+                ids={tagIDs}
+              />
+            </Col>
+          </Form.Group>
+        </div>
+        {createTags?.map((t) => (
           <Badge
             className="tag-item"
             variant="secondary"
@@ -658,13 +785,29 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
             }}
           >
             {t.name}
-            <Button className="minimal ml-2">
+            <Button
+              className="minimal ml-2"
+              title={intl.formatMessage({ id: "actions.create" })}
+            >
               <Icon className="fa-fw" icon={faPlus} />
+            </Button>
+            <Button
+              className="minimal"
+              onClick={(e) => {
+                showTagModal(t);
+                e.stopPropagation();
+              }}
+              title={intl.formatMessage({
+                id: "component_tagger.verb_link_existing",
+              })}
+            >
+              <Icon className="fa-fw" icon={faLink} />
             </Button>
           </Badge>
         ))}
-    </div>
-  );
+      </div>
+    );
+  }
 
   if (loading) {
     return <LoadingIndicator card />;
@@ -688,6 +831,7 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
               </>
             )}
 
+            {maybeRenderStudioCode()}
             {maybeRenderDateField()}
             {getDurationStatus(scene, stashSceneFile?.duration)}
             {getFingerprintStatus(scene, stashScene)}
@@ -696,6 +840,7 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
         {isActive && (
           <div className="d-flex flex-column">
             {maybeRenderStashBoxID()}
+            {maybeRenderDirector()}
             {maybeRenderURL()}
             {maybeRenderDetails()}
           </div>
@@ -705,7 +850,7 @@ const StashSearchResult: React.FC<IStashSearchResultProps> = ({
         <div className="col-lg-6">
           {maybeRenderStudioField()}
           {renderPerformerField()}
-          {renderTagsField()}
+          {maybeRenderTagsField()}
 
           <div className="row no-gutters mt-2 align-items-center justify-content-end">
             <OperationButton operation={handleSave}>
@@ -725,17 +870,30 @@ export interface ISceneSearchResults {
 
 export const SceneSearchResults: React.FC<ISceneSearchResults> = ({
   target,
-  scenes,
+  scenes: unsortedScenes,
 }) => {
   const [selectedResult, setSelectedResult] = useState<number | undefined>();
 
+  const scenes = useMemo(
+    () =>
+      unsortedScenes
+        .slice()
+        .sort((scrapedSceneA, scrapedSceneB) =>
+          compareScenesForSort(target, scrapedSceneA, scrapedSceneB)
+        ),
+    [unsortedScenes, target]
+  );
+
   useEffect(() => {
-    if (!scenes) {
-      setSelectedResult(undefined);
-    } else if (scenes.length > 0 && scenes[0].resolved) {
-      setSelectedResult(0);
+    // #3198 - if the selected result is no longer in the list, reset it
+    if (!selectedResult || scenes?.length <= selectedResult) {
+      if (!scenes) {
+        setSelectedResult(undefined);
+      } else if (scenes.length > 0 && scenes[0].resolved) {
+        setSelectedResult(0);
+      }
     }
-  }, [scenes]);
+  }, [scenes, selectedResult]);
 
   function getClassName(i: number) {
     return cx("row mx-0 mt-2 search-result", {

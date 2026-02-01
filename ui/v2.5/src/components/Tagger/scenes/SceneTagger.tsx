@@ -1,32 +1,113 @@
-import React, { useContext, useState } from "react";
+import React, { useContext, useMemo, useState } from "react";
 import * as GQL from "src/core/generated-graphql";
 import { SceneQueue } from "src/models/sceneQueue";
 import { Button, Form } from "react-bootstrap";
 import { FormattedMessage, useIntl } from "react-intl";
 
-import { Icon, LoadingIndicator } from "src/components/Shared";
+import { Icon } from "src/components/Shared/Icon";
+import { LoadingIndicator } from "src/components/Shared/LoadingIndicator";
 import { OperationButton } from "src/components/Shared/OperationButton";
-import { IScrapedScene, TaggerStateContext } from "../context";
+import { ISceneQueryResult, TaggerStateContext } from "../context";
 import Config from "./Config";
 import { TaggerScene } from "./TaggerScene";
 import { SceneTaggerModals } from "./sceneTaggerModals";
 import { SceneSearchResults } from "./StashSearchResult";
-import { ConfigurationContext } from "src/hooks/Config";
+import { useConfigurationContext } from "src/hooks/Config";
 import { faCog } from "@fortawesome/free-solid-svg-icons";
-import { distance } from "src/utils/hamming";
+import { useLightbox } from "src/hooks/Lightbox/hooks";
+
+const Scene: React.FC<{
+  scene: GQL.SlimSceneDataFragment;
+  searchResult?: ISceneQueryResult;
+  queue?: SceneQueue;
+  index: number;
+  showLightboxImage: (imagePath: string) => void;
+  selected?: boolean;
+  onSelectedChanged?: (selected: boolean, shiftKey: boolean) => void;
+}> = ({
+  scene,
+  searchResult,
+  queue,
+  index,
+  showLightboxImage,
+  selected,
+  onSelectedChanged,
+}) => {
+  const intl = useIntl();
+  const { currentSource, doSceneQuery, doSceneFragmentScrape, loading } =
+    useContext(TaggerStateContext);
+  const { configuration } = useConfigurationContext();
+
+  const cont = configuration?.interface.continuePlaylistDefault ?? false;
+
+  const sceneLink = useMemo(
+    () =>
+      queue
+        ? queue.makeLink(scene.id, { sceneIndex: index, continue: cont })
+        : `/scenes/${scene.id}`,
+    [queue, scene.id, index, cont]
+  );
+
+  const errorMessage = useMemo(() => {
+    if (searchResult?.error) {
+      return searchResult.error;
+    } else if (searchResult && searchResult.results?.length === 0) {
+      return intl.formatMessage({
+        id: "component_tagger.results.match_failed_no_result",
+      });
+    }
+  }, [intl, searchResult]);
+
+  return (
+    <TaggerScene
+      loading={loading}
+      scene={scene}
+      url={sceneLink}
+      errorMessage={errorMessage}
+      doSceneQuery={
+        currentSource?.supportSceneQuery
+          ? async (v) => {
+              await doSceneQuery(scene.id, v);
+            }
+          : undefined
+      }
+      scrapeSceneFragment={
+        currentSource?.supportSceneFragment
+          ? async () => {
+              await doSceneFragmentScrape(scene.id);
+            }
+          : undefined
+      }
+      showLightboxImage={showLightboxImage}
+      queue={queue}
+      index={index}
+      selected={selected}
+      onSelectedChanged={onSelectedChanged}
+    >
+      {searchResult && searchResult.results?.length ? (
+        <SceneSearchResults scenes={searchResult.results} target={scene} />
+      ) : undefined}
+    </TaggerScene>
+  );
+};
 
 interface ITaggerProps {
   scenes: GQL.SlimSceneDataFragment[];
   queue?: SceneQueue;
+  selectedIds: Set<string>;
+  onSelectChange: (id: string, selected: boolean, shiftKey: boolean) => void;
 }
 
-export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
+export const Tagger: React.FC<ITaggerProps> = ({
+  scenes,
+  queue,
+  selectedIds,
+  onSelectChange,
+}) => {
   const {
     sources,
     setCurrentSource,
     currentSource,
-    doSceneQuery,
-    doSceneFragmentScrape,
     doMultiSceneFragmentScrape,
     stopMultiScrape,
     searchResults,
@@ -36,20 +117,12 @@ export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
     submitFingerprints,
     pendingFingerprints,
   } = useContext(TaggerStateContext);
-  const { configuration } = React.useContext(ConfigurationContext);
-
   const [showConfig, setShowConfig] = useState(false);
   const [hideUnmatched, setHideUnmatched] = useState(false);
 
   const intl = useIntl();
 
-  const cont = configuration?.interface.continuePlaylistDefault ?? false;
-
-  function generateSceneLink(scene: GQL.SlimSceneDataFragment, index: number) {
-    return queue
-      ? queue.makeLink(scene.id, { sceneIndex: index, continue: cont })
-      : `/scenes/${scene.id}`;
-  }
+  const hasSelection = selectedIds.size > 0;
 
   function handleSourceSelect(e: React.ChangeEvent<HTMLSelectElement>) {
     setCurrentSource(sources!.find((s) => s.id === e.currentTarget.value));
@@ -91,193 +164,26 @@ export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
     );
   }
 
-  function minDistance(hash: string, stashScene: GQL.SlimSceneDataFragment) {
-    let ret = 9999;
-    stashScene.files.forEach((cv) => {
-      if (ret === 0) return;
-
-      const stashHash = cv.fingerprints.find((fp) => fp.type === "phash");
-      if (!stashHash) {
-        return;
-      }
-
-      const d = distance(hash, stashHash.value);
-      if (d < ret) {
-        ret = d;
-      }
-    });
-
-    return ret;
+  const [spriteImage, setSpriteImage] = useState<string | null>(null);
+  const lightboxImage = useMemo(
+    () => [{ paths: { thumbnail: spriteImage, image: spriteImage } }],
+    [spriteImage]
+  );
+  const showLightbox = useLightbox({
+    images: lightboxImage,
+  });
+  function showLightboxImage(imagePath: string) {
+    setSpriteImage(imagePath);
+    showLightbox({ images: lightboxImage });
   }
 
-  function calculatePhashComparisonScore(
-    stashScene: GQL.SlimSceneDataFragment,
-    scrapedScene: IScrapedScene
-  ) {
-    const phashFingerprints =
-      scrapedScene.fingerprints?.filter((f) => f.algorithm === "PHASH") ?? [];
-    const filteredFingerprints = phashFingerprints.filter(
-      (f) => minDistance(f.hash, stashScene) <= 8
-    );
-
-    if (phashFingerprints.length == 0) return [0, 0];
-
-    return [
-      filteredFingerprints.length,
-      filteredFingerprints.length / phashFingerprints.length,
-    ];
-  }
-
-  function minDurationDiff(
-    stashScene: GQL.SlimSceneDataFragment,
-    duration: number
-  ) {
-    let ret = 9999;
-    stashScene.files.forEach((cv) => {
-      if (ret === 0) return;
-
-      const d = Math.abs(duration - cv.duration);
-      if (d < ret) {
-        ret = d;
-      }
-    });
-
-    return ret;
-  }
-
-  function calculateDurationComparisonScore(
-    stashScene: GQL.SlimSceneDataFragment,
-    scrapedScene: IScrapedScene
-  ) {
-    if (scrapedScene.fingerprints && scrapedScene.fingerprints.length > 0) {
-      const durations = scrapedScene.fingerprints.map((f) => f.duration);
-      const diffs = durations.map((d) => minDurationDiff(stashScene, d));
-      const filteredDurations = diffs.filter((duration) => duration <= 5);
-
-      const minDiff = Math.min(...diffs);
-
-      return [
-        filteredDurations.length,
-        filteredDurations.length / durations.length,
-        minDiff,
-      ];
-    }
-    return [0, 0, 0];
-  }
-
-  function compareScenesForSort(
-    stashScene: GQL.SlimSceneDataFragment,
-    sceneA: IScrapedScene,
-    sceneB: IScrapedScene
-  ) {
-    // Compare sceneA and sceneB to each other for sorting based on similarity to stashScene
-    // Order of priority is: nb. phash match > nb. duration match > ratio duration match > ratio phash match
-
-    // scenes without any fingerprints should be sorted to the end
-    if (!sceneA.fingerprints?.length && sceneB.fingerprints?.length) {
-      return 1;
-    }
-    if (!sceneB.fingerprints?.length && sceneA.fingerprints?.length) {
-      return -1;
-    }
-
-    const [
-      nbPhashMatchSceneA,
-      ratioPhashMatchSceneA,
-    ] = calculatePhashComparisonScore(stashScene, sceneA);
-    const [
-      nbPhashMatchSceneB,
-      ratioPhashMatchSceneB,
-    ] = calculatePhashComparisonScore(stashScene, sceneB);
-
-    if (nbPhashMatchSceneA != nbPhashMatchSceneB) {
-      return nbPhashMatchSceneB - nbPhashMatchSceneA;
-    }
-
-    // Same number of phash matches, check duration
-    const [
-      nbDurationMatchSceneA,
-      ratioDurationMatchSceneA,
-      minDurationDiffSceneA,
-    ] = calculateDurationComparisonScore(stashScene, sceneA);
-    const [
-      nbDurationMatchSceneB,
-      ratioDurationMatchSceneB,
-      minDurationDiffSceneB,
-    ] = calculateDurationComparisonScore(stashScene, sceneB);
-
-    if (nbDurationMatchSceneA != nbDurationMatchSceneB) {
-      return nbDurationMatchSceneB - nbDurationMatchSceneA;
-    }
-
-    // Same number of phash & duration, check duration ratio
-    if (ratioDurationMatchSceneA != ratioDurationMatchSceneB) {
-      return ratioDurationMatchSceneB - ratioDurationMatchSceneA;
-    }
-
-    // Damn this is close... Check phash ratio
-    if (ratioPhashMatchSceneA !== ratioPhashMatchSceneB) {
-      return ratioPhashMatchSceneB - ratioPhashMatchSceneA;
-    }
-
-    // fall back to duration difference - less is better
-    return minDurationDiffSceneA - minDurationDiffSceneB;
-  }
-
-  function renderScenes() {
-    const filteredScenes = !hideUnmatched
-      ? scenes
-      : scenes.filter((s) => searchResults[s.id]?.results?.length);
-
-    return filteredScenes.map((scene, index) => {
-      const sceneLink = generateSceneLink(scene, index);
-      let errorMessage: string | undefined;
-      const searchResult = searchResults[scene.id];
-      if (searchResult?.error) {
-        errorMessage = searchResult.error;
-      } else if (searchResult && searchResult.results?.length === 0) {
-        errorMessage = intl.formatMessage({
-          id: "component_tagger.results.match_failed_no_result",
-        });
-      } else if (
-        searchResult &&
-        searchResult.results &&
-        searchResult.results?.length >= 2
-      ) {
-        searchResult.results?.sort((scrapedSceneA, scrapedSceneB) =>
-          compareScenesForSort(scene, scrapedSceneA, scrapedSceneB)
-        );
-      }
-
-      return (
-        <TaggerScene
-          key={scene.id}
-          loading={loading}
-          scene={scene}
-          url={sceneLink}
-          errorMessage={errorMessage}
-          doSceneQuery={
-            currentSource?.supportSceneQuery
-              ? async (v) => {
-                  await doSceneQuery(scene.id, v);
-                }
-              : undefined
-          }
-          scrapeSceneFragment={
-            currentSource?.supportSceneFragment
-              ? async () => {
-                  await doSceneFragmentScrape(scene.id);
-                }
-              : undefined
-          }
-        >
-          {searchResult && searchResult.results?.length ? (
-            <SceneSearchResults scenes={searchResult.results} target={scene} />
-          ) : undefined}
-        </TaggerScene>
-      );
-    });
-  }
+  const filteredScenes = useMemo(
+    () =>
+      !hideUnmatched
+        ? scenes
+        : scenes.filter((s) => searchResults[s.id]?.results?.length),
+    [scenes, searchResults, hideUnmatched]
+  );
 
   const toggleHideUnmatchedScenes = () => {
     setHideUnmatched(!hideUnmatched);
@@ -326,6 +232,15 @@ export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
       return;
     }
 
+    // Use selected scenes if any, otherwise all scenes
+    const scenesToScrape = hasSelection
+      ? scenes.filter((s) => selectedIds.has(s.id))
+      : scenes;
+
+    if (scenesToScrape.length === 0) {
+      return;
+    }
+
     if (loadingMulti) {
       return (
         <Button
@@ -343,15 +258,20 @@ export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
       );
     }
 
+    // Change button text based on selection state
+    const buttonTextId = hasSelection
+      ? "component_tagger.verb_scrape_selected"
+      : "component_tagger.verb_scrape_all";
+
     return (
       <div className="ml-1">
         <OperationButton
           disabled={loading}
           operation={async () => {
-            await doMultiSceneFragmentScrape(scenes.map((s) => s.id));
+            await doMultiSceneFragmentScrape(scenesToScrape.map((s) => s.id));
           }}
         >
-          {intl.formatMessage({ id: "component_tagger.verb_scrape_all" })}
+          {intl.formatMessage({ id: buttonTextId })}
         </OperationButton>
         {multiError && (
           <>
@@ -378,7 +298,22 @@ export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
           </div>
           <Config show={showConfig} />
         </div>
-        <div>{renderScenes()}</div>
+        <div>
+          {filteredScenes.map((s, i) => (
+            <Scene
+              key={s.id}
+              scene={s}
+              searchResult={searchResults[s.id]}
+              index={i}
+              showLightboxImage={showLightboxImage}
+              queue={queue}
+              selected={selectedIds.has(s.id)}
+              onSelectedChanged={(selected, shiftKey) =>
+                onSelectChange(s.id, selected, shiftKey)
+              }
+            />
+          ))}
+        </div>
       </div>
     </SceneTaggerModals>
   );

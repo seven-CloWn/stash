@@ -2,16 +2,14 @@ package image
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/stashapp/stash/pkg/file"
 	"github.com/stashapp/stash/pkg/fsutil"
+	"github.com/stashapp/stash/pkg/logger"
 	"github.com/stashapp/stash/pkg/models"
 	"github.com/stashapp/stash/pkg/models/paths"
 )
-
-type Destroyer interface {
-	Destroy(ctx context.Context, id int) error
-}
 
 // FileDeleter is an extension of file.Deleter that handles deletion of image files.
 type FileDeleter struct {
@@ -21,27 +19,35 @@ type FileDeleter struct {
 }
 
 // MarkGeneratedFiles marks for deletion the generated files for the provided image.
+// Generated files bypass trash and are permanently deleted since they can be regenerated.
 func (d *FileDeleter) MarkGeneratedFiles(image *models.Image) error {
+	var files []string
 	thumbPath := d.Paths.Generated.GetThumbnailPath(image.Checksum, models.DefaultGthumbWidth)
 	exists, _ := fsutil.FileExists(thumbPath)
 	if exists {
-		return d.Files([]string{thumbPath})
+		files = append(files, thumbPath)
+	}
+	prevPath := d.Paths.Generated.GetClipPreviewPath(image.Checksum, models.DefaultGthumbWidth)
+	exists, _ = fsutil.FileExists(prevPath)
+	if exists {
+		files = append(files, prevPath)
 	}
 
-	return nil
+	return d.FilesWithoutTrash(files)
 }
 
 // Destroy destroys an image, optionally marking the file and generated files for deletion.
-func (s *Service) Destroy(ctx context.Context, i *models.Image, fileDeleter *FileDeleter, deleteGenerated, deleteFile bool) error {
-	return s.destroyImage(ctx, i, fileDeleter, deleteGenerated, deleteFile)
+func (s *Service) Destroy(ctx context.Context, i *models.Image, fileDeleter *FileDeleter, deleteGenerated, deleteFile, destroyFileEntry bool) error {
+	return s.destroyImage(ctx, i, fileDeleter, deleteGenerated, deleteFile, destroyFileEntry)
 }
 
 // DestroyZipImages destroys all images in zip, optionally marking the files and generated files for deletion.
 // Returns a slice of images that were destroyed.
-func (s *Service) DestroyZipImages(ctx context.Context, zipFile file.File, fileDeleter *FileDeleter, deleteGenerated bool) ([]*models.Image, error) {
+func (s *Service) DestroyZipImages(ctx context.Context, zipFile models.File, fileDeleter *FileDeleter, deleteGenerated bool) ([]*models.Image, error) {
 	var imgsDestroyed []*models.Image
+	zipFileID := zipFile.Base().ID
 
-	imgs, err := s.Repository.FindByZipFileID(ctx, zipFile.Base().ID)
+	imgs, err := s.Repository.FindByZipFileID(ctx, zipFileID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,8 +57,87 @@ func (s *Service) DestroyZipImages(ctx context.Context, zipFile file.File, fileD
 			return nil, err
 		}
 
+		// #5048 - if the image has multiple files, we just want to remove the file in the zip file,
+		// not delete the image entirely
+		if len(img.Files.List()) > 1 {
+			for _, f := range img.Files.List() {
+				if f.Base().ZipFileID == nil || *f.Base().ZipFileID != zipFileID {
+					continue
+				}
+
+				if err := s.Repository.RemoveFileID(ctx, img.ID, f.Base().ID); err != nil {
+					return nil, fmt.Errorf("failed to remove file from image: %w", err)
+				}
+			}
+
+			// don't delete the image
+			continue
+		}
+
 		const deleteFileInZip = false
-		if err := s.destroyImage(ctx, img, fileDeleter, deleteGenerated, deleteFileInZip); err != nil {
+		const destroyFileEntry = false
+		if err := s.destroyImage(ctx, img, fileDeleter, deleteGenerated, deleteFileInZip, destroyFileEntry); err != nil {
+			return nil, err
+		}
+
+		imgsDestroyed = append(imgsDestroyed, img)
+	}
+
+	return imgsDestroyed, nil
+}
+
+// DestroyFolderImages destroys all images in a folder, optionally marking the files and generated files for deletion.
+// It will not delete images that are attached to more than one gallery.
+// Returns a slice of images that were destroyed.
+func (s *Service) DestroyFolderImages(ctx context.Context, folderID models.FolderID, fileDeleter *FileDeleter, deleteGenerated, deleteFile bool) ([]*models.Image, error) {
+	var imgsDestroyed []*models.Image
+
+	// find images in this folder
+	imgs, err := s.Repository.FindByFolderID(ctx, folderID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, img := range imgs {
+		if err := img.LoadFiles(ctx, s.Repository); err != nil {
+			return nil, err
+		}
+
+		// #5048 - if the image has multiple files, we just want to remove the file
+		// in the folder
+		if len(img.Files.List()) > 1 {
+			for _, f := range img.Files.List() {
+				if f.Base().ParentFolderID != folderID {
+					continue
+				}
+
+				if err := s.Repository.RemoveFileID(ctx, img.ID, f.Base().ID); err != nil {
+					return nil, fmt.Errorf("failed to remove file from image: %w", err)
+				}
+
+				// we still want to delete the file from the folder, if applicable
+				if deleteFile {
+					if err := file.Destroy(ctx, s.File, f, fileDeleter.Deleter, deleteFile); err != nil {
+						return nil, fmt.Errorf("failed to delete image file: %w", err)
+					}
+				}
+			}
+
+			// don't delete the image
+			continue
+		}
+
+		if err := img.LoadGalleryIDs(ctx, s.Repository); err != nil {
+			return nil, err
+		}
+
+		// only destroy images that are not attached to other galleries
+		if len(img.GalleryIDs.List()) > 1 {
+			continue
+		}
+
+		const destroyFileEntry = false
+		if err := s.Destroy(ctx, img, fileDeleter, deleteGenerated, deleteFile, destroyFileEntry); err != nil {
 			return nil, err
 		}
 
@@ -63,9 +148,13 @@ func (s *Service) DestroyZipImages(ctx context.Context, zipFile file.File, fileD
 }
 
 // Destroy destroys an image, optionally marking the file and generated files for deletion.
-func (s *Service) destroyImage(ctx context.Context, i *models.Image, fileDeleter *FileDeleter, deleteGenerated, deleteFile bool) error {
+func (s *Service) destroyImage(ctx context.Context, i *models.Image, fileDeleter *FileDeleter, deleteGenerated, deleteFile, destroyFileEntry bool) error {
 	if deleteFile {
 		if err := s.deleteFiles(ctx, i, fileDeleter); err != nil {
+			return err
+		}
+	} else if destroyFileEntry {
+		if err := s.destroyFileEntries(ctx, i); err != nil {
 			return err
 		}
 	}
@@ -87,7 +176,7 @@ func (s *Service) deleteFiles(ctx context.Context, i *models.Image, fileDeleter 
 
 	for _, f := range i.Files.List() {
 		// only delete files where there is no other associated image
-		otherImages, err := s.Repository.FindByFileID(ctx, f.ID)
+		otherImages, err := s.Repository.FindByFileID(ctx, f.Base().ID)
 		if err != nil {
 			return err
 		}
@@ -99,8 +188,41 @@ func (s *Service) deleteFiles(ctx context.Context, i *models.Image, fileDeleter 
 
 		// don't delete files in zip archives
 		const deleteFile = true
-		if f.ZipFileID == nil {
+		if f.Base().ZipFileID == nil {
+			logger.Info("Deleting image file: ", f.Base().Path)
 			if err := file.Destroy(ctx, s.File, f, fileDeleter.Deleter, deleteFile); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// destroyFileEntries destroys file entries from the database without deleting
+// the files from the filesystem
+func (s *Service) destroyFileEntries(ctx context.Context, i *models.Image) error {
+	if err := i.LoadFiles(ctx, s.Repository); err != nil {
+		return err
+	}
+
+	for _, f := range i.Files.List() {
+		// only destroy file entries where there is no other associated image
+		otherImages, err := s.Repository.FindByFileID(ctx, f.Base().ID)
+		if err != nil {
+			return err
+		}
+
+		if len(otherImages) > 1 {
+			// other image associated, don't remove
+			continue
+		}
+
+		// don't destroy files in zip archives
+		if f.Base().ZipFileID == nil {
+			const deleteFile = false
+			logger.Info("Destroying image file entry: ", f.Base().Path)
+			if err := file.Destroy(ctx, s.File, f, nil, deleteFile); err != nil {
 				return err
 			}
 		}

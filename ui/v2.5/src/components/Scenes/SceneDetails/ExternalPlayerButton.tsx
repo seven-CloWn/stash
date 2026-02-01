@@ -2,7 +2,7 @@ import { faExternalLinkAlt } from "@fortawesome/free-solid-svg-icons";
 import React from "react";
 import { Button } from "react-bootstrap";
 import { useIntl } from "react-intl";
-import Icon from "src/components/Shared/Icon";
+import { Icon } from "src/components/Shared/Icon";
 import { objectTitle } from "src/core/files";
 import { SceneDataFragment } from "src/core/generated-graphql";
 
@@ -29,18 +29,24 @@ export const ExternalPlayerButton: React.FC<IExternalPlayerButtonProps> = ({
   const streamURL = new URL(stream);
   if (isAndroid) {
     const scheme = streamURL.protocol.slice(0, -1);
-    streamURL.hash = `Intent;action=android.intent.action.VIEW;scheme=${scheme};type=video/mp4;S.title=${encodeURI(
+    streamURL.hash = `Intent;action=android.intent.action.VIEW;scheme=${scheme};type=video/mp4;S.title=${encodeURIComponent(
       title
     )};end`;
-    streamURL.protocol = "intent";
-    url = streamURL.toString();
+
+    // #4401 - not allowed to set the protocol from a "special" protocol to a non-special protocol
+    url = streamURL
+      .toString()
+      .replace(new RegExp(`^${streamURL.protocol}`), "intent:");
   } else if (isAppleDevice) {
     streamURL.host = "x-callback-url";
     streamURL.port = "";
     streamURL.pathname = "stream";
     streamURL.search = `url=${encodeURIComponent(stream)}`;
-    streamURL.protocol = "vlc-x-callback";
-    url = streamURL.toString();
+
+    // #4401 - not allowed to set the protocol from a "special" protocol to a non-special protocol
+    url = streamURL
+      .toString()
+      .replace(new RegExp(`^${streamURL.protocol}`), "vlc-x-callback:");
   }
 
   return (

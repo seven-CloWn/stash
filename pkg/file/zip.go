@@ -2,27 +2,34 @@ package file
 
 import (
 	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/stashapp/stash/pkg/logger"
+	"github.com/stashapp/stash/pkg/models"
+	"github.com/xWTF/chardet"
+
+	"golang.org/x/net/html/charset"
+	"golang.org/x/text/transform"
 )
 
 var (
-	errNotReaderAt  = errors.New("not a ReaderAt")
+	ErrNotReaderAt  = errors.New("invalid reader: does not implement io.ReaderAt")
 	errZipFSOpenZip = errors.New("cannot open zip file inside zip file")
 )
 
 // ZipFS is a file system backed by a zip file.
-type ZipFS struct {
+type zipFS struct {
 	*zip.Reader
 	zipFileCloser io.Closer
-	zipInfo       fs.FileInfo
 	zipPath       string
 }
 
-func newZipFS(fs FS, path string, info fs.FileInfo) (*ZipFS, error) {
+func newZipFS(fs models.FS, path string, size int64) (*zipFS, error) {
 	reader, err := fs.Open(path)
 	if err != nil {
 		return nil, err
@@ -31,24 +38,61 @@ func newZipFS(fs FS, path string, info fs.FileInfo) (*ZipFS, error) {
 	asReaderAt, _ := reader.(io.ReaderAt)
 	if asReaderAt == nil {
 		reader.Close()
-		return nil, errNotReaderAt
+		return nil, ErrNotReaderAt
 	}
 
-	zipReader, err := zip.NewReader(asReaderAt, info.Size())
+	zipReader, err := zip.NewReader(asReaderAt, size)
 	if err != nil {
 		reader.Close()
 		return nil, err
 	}
 
-	return &ZipFS{
+	// Concat all Name and Comment for better detection result
+	var buffer bytes.Buffer
+	for _, f := range zipReader.File {
+		buffer.WriteString(f.Name)
+		buffer.WriteString(f.Comment)
+	}
+	buffer.WriteString(zipReader.Comment)
+
+	// Detect encoding
+	d, err := chardet.NewTextDetector().DetectBest(buffer.Bytes())
+	if err != nil {
+		// If we can't detect the encoding, just assume it's UTF8
+		logger.Warnf("Unable to detect decoding for %s: %w", path, err)
+	}
+
+	// If the charset is not UTF8, decode'em
+	if d != nil && d.Charset != "UTF-8" {
+		logger.Debugf("Detected non-utf8 zip charset %s (%s): %s", d.Charset, d.Language, path)
+
+		e, _ := charset.Lookup(d.Charset)
+		if e == nil {
+			// if we can't find the encoding, just assume it's UTF8
+			logger.Warnf("Failed to lookup charset %s, language %s", d.Charset, d.Language)
+		} else {
+			decoder := e.NewDecoder()
+			for _, f := range zipReader.File {
+				newName, _, err := transform.String(decoder, f.Name)
+				if err != nil {
+					reader.Close()
+					logger.Warnf("Failed to decode %v: %v", []byte(f.Name), err)
+				} else {
+					f.Name = newName
+				}
+				// Comments are not decoded cuz stash doesn't use that
+			}
+		}
+	}
+
+	return &zipFS{
 		Reader:        zipReader,
 		zipFileCloser: reader,
-		zipInfo:       info,
 		zipPath:       path,
 	}, nil
 }
 
-func (f *ZipFS) rel(name string) (string, error) {
+func (f *zipFS) rel(name string) (string, error) {
 	if f.zipPath == name {
 		return ".", nil
 	}
@@ -65,7 +109,7 @@ func (f *ZipFS) rel(name string) (string, error) {
 	return relName, nil
 }
 
-func (f *ZipFS) Stat(name string) (fs.FileInfo, error) {
+func (f *zipFS) Stat(name string) (fs.FileInfo, error) {
 	reader, err := f.Open(name)
 	if err != nil {
 		return nil, err
@@ -75,15 +119,15 @@ func (f *ZipFS) Stat(name string) (fs.FileInfo, error) {
 	return reader.Stat()
 }
 
-func (f *ZipFS) Lstat(name string) (fs.FileInfo, error) {
+func (f *zipFS) Lstat(name string) (fs.FileInfo, error) {
 	return f.Stat(name)
 }
 
-func (f *ZipFS) OpenZip(name string) (*ZipFS, error) {
+func (f *zipFS) OpenZip(name string, size int64) (models.ZipFS, error) {
 	return nil, errZipFSOpenZip
 }
 
-func (f *ZipFS) IsPathCaseSensitive(path string) (bool, error) {
+func (f *zipFS) IsPathCaseSensitive(path string) (bool, error) {
 	return true, nil
 }
 
@@ -100,7 +144,7 @@ func (f *zipReadDirFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	return asReadDirFile.ReadDir(n)
 }
 
-func (f *ZipFS) Open(name string) (fs.ReadDirFile, error) {
+func (f *zipFS) Open(name string) (fs.ReadDirFile, error) {
 	relName, err := f.rel(name)
 	if err != nil {
 		return nil, err
@@ -116,12 +160,12 @@ func (f *ZipFS) Open(name string) (fs.ReadDirFile, error) {
 	}, nil
 }
 
-func (f *ZipFS) Close() error {
+func (f *zipFS) Close() error {
 	return f.zipFileCloser.Close()
 }
 
 // openOnly returns a ReadCloser where calling Close will close the zip fs as well.
-func (f *ZipFS) OpenOnly(name string) (io.ReadCloser, error) {
+func (f *zipFS) OpenOnly(name string) (io.ReadCloser, error) {
 	r, err := f.Open(name)
 	if err != nil {
 		return nil, err

@@ -2,101 +2,166 @@ import cloneDeep from "lodash-es/cloneDeep";
 import React from "react";
 import { useHistory } from "react-router-dom";
 import { useIntl } from "react-intl";
-import { Helmet } from "react-helmet";
-import { TITLE_SUFFIX } from "src/components/Shared";
 import Mousetrap from "mousetrap";
-import { FindSceneMarkersQueryResult } from "src/core/generated-graphql";
-import { queryFindSceneMarkers } from "src/core/StashService";
-import { NavUtils } from "src/utils";
-import { useSceneMarkersList } from "src/hooks";
-import { PersistanceLevel } from "src/hooks/ListHook";
+import * as GQL from "src/core/generated-graphql";
+import {
+  queryFindSceneMarkers,
+  useFindSceneMarkers,
+} from "src/core/StashService";
+import NavUtils from "src/utils/navigation";
+import { ItemList, ItemListContext } from "../List/ItemList";
 import { ListFilterModel } from "src/models/list-filter/filter";
 import { DisplayMode } from "src/models/list-filter/types";
-import { WallPanel } from "../Wall/WallPanel";
+import { MarkerWallPanel } from "./SceneMarkerWallPanel";
+import { View } from "../List/views";
+import { SceneMarkerCardGrid } from "./SceneMarkerCardGrid";
+import { DeleteSceneMarkersDialog } from "./DeleteSceneMarkersDialog";
+import { EditSceneMarkersDialog } from "./EditSceneMarkersDialog";
+import { PatchComponent } from "src/patch";
+import { IItemListOperation } from "../List/FilteredListToolbar";
+
+function getItems(result: GQL.FindSceneMarkersQueryResult) {
+  return result?.data?.findSceneMarkers?.scene_markers ?? [];
+}
+
+function getCount(result: GQL.FindSceneMarkersQueryResult) {
+  return result?.data?.findSceneMarkers?.count ?? 0;
+}
 
 interface ISceneMarkerList {
   filterHook?: (filter: ListFilterModel) => ListFilterModel;
+  view?: View;
+  alterQuery?: boolean;
+  defaultSort?: string;
+  extraOperations?: IItemListOperation<GQL.FindSceneMarkersQueryResult>[];
 }
 
-export const SceneMarkerList: React.FC<ISceneMarkerList> = ({ filterHook }) => {
-  const intl = useIntl();
-  const history = useHistory();
-  const otherOperations = [
-    {
-      text: intl.formatMessage({ id: "actions.play_random" }),
-      onClick: playRandom,
-    },
-  ];
+export const SceneMarkerList: React.FC<ISceneMarkerList> = PatchComponent(
+  "SceneMarkerList",
+  ({ filterHook, view, alterQuery, extraOperations = [] }) => {
+    const intl = useIntl();
+    const history = useHistory();
 
-  const addKeybinds = (
-    result: FindSceneMarkersQueryResult,
-    filter: ListFilterModel
-  ) => {
-    Mousetrap.bind("p r", () => {
-      playRandom(result, filter);
-    });
+    const filterMode = GQL.FilterMode.SceneMarkers;
 
-    return () => {
-      Mousetrap.unbind("p r");
-    };
-  };
+    const otherOperations = [
+      ...extraOperations,
+      {
+        text: intl.formatMessage({ id: "actions.play_random" }),
+        onClick: playRandom,
+      },
+    ];
 
-  const listData = useSceneMarkersList({
-    otherOperations,
-    renderContent,
-    filterHook,
-    addKeybinds,
-    persistState: PersistanceLevel.ALL,
-  });
+    function addKeybinds(
+      result: GQL.FindSceneMarkersQueryResult,
+      filter: ListFilterModel
+    ) {
+      Mousetrap.bind("p r", () => {
+        playRandom(result, filter);
+      });
 
-  async function playRandom(
-    result: FindSceneMarkersQueryResult,
-    filter: ListFilterModel
-  ) {
-    // query for a random scene
-    if (result.data?.findSceneMarkers) {
-      const { count } = result.data.findSceneMarkers;
+      return () => {
+        Mousetrap.unbind("p r");
+      };
+    }
 
-      const index = Math.floor(Math.random() * count);
-      const filterCopy = cloneDeep(filter);
-      filterCopy.itemsPerPage = 1;
-      filterCopy.currentPage = index + 1;
-      const singleResult = await queryFindSceneMarkers(filterCopy);
-      if (singleResult?.data?.findSceneMarkers?.scene_markers?.length === 1) {
-        // navigate to the scene player page
-        const url = NavUtils.makeSceneMarkerUrl(
-          singleResult.data.findSceneMarkers.scene_markers[0]
-        );
-        history.push(url);
+    async function playRandom(
+      result: GQL.FindSceneMarkersQueryResult,
+      filter: ListFilterModel
+    ) {
+      // query for a random scene
+      if (result.data?.findSceneMarkers) {
+        const { count } = result.data.findSceneMarkers;
+
+        const index = Math.floor(Math.random() * count);
+        const filterCopy = cloneDeep(filter);
+        filterCopy.itemsPerPage = 1;
+        filterCopy.currentPage = index + 1;
+        const singleResult = await queryFindSceneMarkers(filterCopy);
+        if (singleResult.data.findSceneMarkers.scene_markers.length === 1) {
+          // navigate to the scene player page
+          const url = NavUtils.makeSceneMarkerUrl(
+            singleResult.data.findSceneMarkers.scene_markers[0]
+          );
+          history.push(url);
+        }
       }
     }
-  }
 
-  function renderContent(
-    result: FindSceneMarkersQueryResult,
-    filter: ListFilterModel
-  ) {
-    if (!result?.data?.findSceneMarkers) return;
-    if (filter.displayMode === DisplayMode.Wall) {
+    function renderContent(
+      result: GQL.FindSceneMarkersQueryResult,
+      filter: ListFilterModel,
+      selectedIds: Set<string>,
+      onSelectChange: (id: string, selected: boolean, shiftKey: boolean) => void
+    ) {
+      if (!result.data?.findSceneMarkers) return;
+
+      if (filter.displayMode === DisplayMode.Wall) {
+        return (
+          <MarkerWallPanel
+            markers={result.data.findSceneMarkers.scene_markers}
+            zoomIndex={filter.zoomIndex}
+            selectedIds={selectedIds}
+            onSelectChange={onSelectChange}
+          />
+        );
+      }
+
+      if (filter.displayMode === DisplayMode.Grid) {
+        return (
+          <SceneMarkerCardGrid
+            markers={result.data.findSceneMarkers.scene_markers}
+            zoomIndex={filter.zoomIndex}
+            selectedIds={selectedIds}
+            onSelectChange={onSelectChange}
+          />
+        );
+      }
+    }
+
+    function renderEditDialog(
+      selectedMarkers: GQL.SceneMarkerDataFragment[],
+      onClose: (applied: boolean) => void
+    ) {
       return (
-        <WallPanel sceneMarkers={result.data.findSceneMarkers.scene_markers} />
+        <EditSceneMarkersDialog selected={selectedMarkers} onClose={onClose} />
       );
     }
+
+    function renderDeleteDialog(
+      selectedSceneMarkers: GQL.SceneMarkerDataFragment[],
+      onClose: (confirmed: boolean) => void
+    ) {
+      return (
+        <DeleteSceneMarkersDialog
+          selected={selectedSceneMarkers}
+          onClose={onClose}
+        />
+      );
+    }
+
+    return (
+      <ItemListContext
+        filterMode={filterMode}
+        useResult={useFindSceneMarkers}
+        getItems={getItems}
+        getCount={getCount}
+        alterQuery={alterQuery}
+        filterHook={filterHook}
+        view={view}
+        selectable
+      >
+        <ItemList
+          view={view}
+          otherOperations={otherOperations}
+          addKeybinds={addKeybinds}
+          renderContent={renderContent}
+          renderEditDialog={renderEditDialog}
+          renderDeleteDialog={renderDeleteDialog}
+        />
+      </ItemListContext>
+    );
   }
-  const title_template = `${intl.formatMessage({
-    id: "markers",
-  })} ${TITLE_SUFFIX}`;
-
-  return (
-    <>
-      <Helmet
-        defaultTitle={title_template}
-        titleTemplate={`%s | ${title_template}`}
-      />
-
-      {listData.template}
-    </>
-  );
-};
+);
 
 export default SceneMarkerList;

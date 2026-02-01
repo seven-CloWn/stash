@@ -6,43 +6,45 @@ import {
   TagsCriterionOption,
 } from "src/models/list-filter/criteria/tags";
 import { ListFilterModel } from "src/models/list-filter/filter";
-import React from "react";
-import { ConfigurationContext } from "src/hooks/Config";
-import { IUIConfig } from "./config";
 
-export const tagFilterHook = (tag: GQL.TagDataFragment) => {
+export const useTagFilterHook = (
+  tag: GQL.TagDataFragment,
+  showSubTagContent?: boolean
+) => {
   return (filter: ListFilterModel) => {
-    const config = React.useContext(ConfigurationContext);
     const tagValue = { id: tag.id, label: tag.name };
     // if tag is already present, then we modify it, otherwise add
     let tagCriterion = filter.criteria.find((c) => {
       return c.criterionOption.type === "tags";
-    }) as TagsCriterion;
+    }) as TagsCriterion | undefined;
 
-    if (
-      tagCriterion &&
-      (tagCriterion.modifier === GQL.CriterionModifier.IncludesAll ||
-        tagCriterion.modifier === GQL.CriterionModifier.Includes)
-    ) {
-      // add the tag if not present
+    if (tagCriterion) {
       if (
-        !tagCriterion.value.items.find((p) => {
-          return p.id === tag.id;
-        })
+        tagCriterion.modifier === GQL.CriterionModifier.IncludesAll ||
+        tagCriterion.modifier === GQL.CriterionModifier.Includes
       ) {
-        tagCriterion.value.items.push(tagValue);
+        // add the tag if not present
+        if (
+          !tagCriterion.value.items.find((p) => {
+            return p.id === tag.id;
+          })
+        ) {
+          tagCriterion.value.items.push(tagValue);
+        }
+      } else {
+        // overwrite
+        tagCriterion.value.items = [tagValue];
       }
 
       tagCriterion.modifier = GQL.CriterionModifier.IncludesAll;
     } else {
-      // overwrite
       tagCriterion = new TagsCriterion(TagsCriterionOption);
       tagCriterion.value = {
         items: [tagValue],
-        depth: (config?.configuration?.ui as IUIConfig)?.showChildTagContent
-          ? -1
-          : 0,
+        excluded: [],
+        depth: showSubTagContent ? -1 : 0,
       };
+      tagCriterion.modifier = GQL.CriterionModifier.IncludesAll;
       filter.criteria.push(tagCriterion);
     }
 
@@ -56,7 +58,7 @@ interface ITagRelationTuple {
 }
 
 export const tagRelationHook = (
-  tag: GQL.SlimTagDataFragment | GQL.TagDataFragment,
+  tag: GQL.SlimTagDataFragment | GQL.TagDataFragment | GQL.TagListDataFragment,
   old: ITagRelationTuple,
   updated: ITagRelationTuple
 ) => {
@@ -82,8 +84,8 @@ export const tagRelationHook = (
           id: cache.identify(o),
           fields: {
             [property](value, { readField }) {
-              return value.filter(
-                (t: GQL.SlimTagDataFragment) => readField("id", t) !== tag.id
+              return (value as GQL.SlimTagDataFragment[]).filter(
+                (t) => readField("id", t) !== tag.id
               );
             },
           },
@@ -97,7 +99,7 @@ export const tagRelationHook = (
           id: cache.identify(u),
           fields: {
             [property](value) {
-              return [...value, tagRef];
+              return [...(value as unknown[]), tagRef];
             },
           },
         });

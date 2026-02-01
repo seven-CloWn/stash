@@ -1,8 +1,9 @@
-import { Tabs, Tab } from "react-bootstrap";
-import React, { useEffect, useState } from "react";
-import { useParams, useHistory } from "react-router-dom";
+import { Tabs, Tab, Form } from "react-bootstrap";
+import React, { useEffect, useMemo, useState } from "react";
+import { useHistory, Redirect, RouteComponentProps } from "react-router-dom";
 import { FormattedMessage, useIntl } from "react-intl";
 import { Helmet } from "react-helmet";
+import cx from "classnames";
 import Mousetrap from "mousetrap";
 
 import * as GQL from "src/core/generated-graphql";
@@ -12,95 +13,355 @@ import {
   useStudioDestroy,
   mutateMetadataAutoTag,
 } from "src/core/StashService";
-import { ImageUtils } from "src/utils";
-import {
-  Counter,
-  DetailsEditNavbar,
-  Modal,
-  LoadingIndicator,
-  ErrorMessage,
-} from "src/components/Shared";
-import { useToast } from "src/hooks";
-import { ConfigurationContext } from "src/hooks/Config";
+import { DetailsEditNavbar } from "src/components/Shared/DetailsEditNavbar";
+import { ModalComponent } from "src/components/Shared/Modal";
+import { LoadingIndicator } from "src/components/Shared/LoadingIndicator";
+import { ErrorMessage } from "src/components/Shared/ErrorMessage";
+import { useToast } from "src/hooks/Toast";
+import { useConfigurationContext } from "src/hooks/Config";
 import { StudioScenesPanel } from "./StudioScenesPanel";
 import { StudioGalleriesPanel } from "./StudioGalleriesPanel";
 import { StudioImagesPanel } from "./StudioImagesPanel";
 import { StudioChildrenPanel } from "./StudioChildrenPanel";
 import { StudioPerformersPanel } from "./StudioPerformersPanel";
 import { StudioEditPanel } from "./StudioEditPanel";
-import { StudioDetailsPanel } from "./StudioDetailsPanel";
-import { StudioMoviesPanel } from "./StudioMoviesPanel";
+import {
+  CompressedStudioDetailsPanel,
+  StudioDetailsPanel,
+} from "./StudioDetailsPanel";
+import { StudioGroupsPanel } from "./StudioGroupsPanel";
 import { faTrashAlt } from "@fortawesome/free-solid-svg-icons";
-import { IUIConfig } from "src/core/config";
+import { RatingSystem } from "src/components/Shared/Rating/RatingSystem";
+import { DetailImage } from "src/components/Shared/DetailImage";
+import { useRatingKeybinds } from "src/hooks/keybinds";
+import { useLoadStickyHeader } from "src/hooks/detailsPanel";
+import { useScrollToTopOnMount } from "src/hooks/scrollToTop";
+import { BackgroundImage } from "src/components/Shared/DetailsPage/BackgroundImage";
+import {
+  TabTitleCounter,
+  useTabKey,
+} from "src/components/Shared/DetailsPage/Tabs";
+import { DetailTitle } from "src/components/Shared/DetailsPage/DetailTitle";
+import { ExpandCollapseButton } from "src/components/Shared/CollapseButton";
+import { FavoriteIcon } from "src/components/Shared/FavoriteIcon";
+import { ExternalLinkButtons } from "src/components/Shared/ExternalLinksButton";
+import { AliasList } from "src/components/Shared/DetailsPage/AliasList";
+import { HeaderImage } from "src/components/Shared/DetailsPage/HeaderImage";
+import { goBackOrReplace } from "src/utils/history";
+import { OCounterButton } from "src/components/Shared/CountButton";
 
 interface IProps {
   studio: GQL.StudioDataFragment;
+  tabKey?: TabKey;
 }
 
 interface IStudioParams {
+  id: string;
   tab?: string;
 }
 
-const StudioPage: React.FC<IProps> = ({ studio }) => {
+const validTabs = [
+  "default",
+  "scenes",
+  "galleries",
+  "images",
+  "performers",
+  "groups",
+  "childstudios",
+] as const;
+type TabKey = (typeof validTabs)[number];
+
+function isTabKey(tab: string): tab is TabKey {
+  return validTabs.includes(tab as TabKey);
+}
+
+const StudioTabs: React.FC<{
+  tabKey?: TabKey;
+  studio: GQL.StudioDataFragment;
+  abbreviateCounter: boolean;
+  showAllCounts?: boolean;
+}> = ({ tabKey, studio, abbreviateCounter, showAllCounts = false }) => {
+  const [showAllDetails, setShowAllDetails] = useState<boolean>(
+    showAllCounts && studio.child_studios.length > 0
+  );
+
+  const sceneCount =
+    (showAllDetails ? studio.scene_count_all : studio.scene_count) ?? 0;
+  const galleryCount =
+    (showAllDetails ? studio.gallery_count_all : studio.gallery_count) ?? 0;
+  const imageCount =
+    (showAllDetails ? studio.image_count_all : studio.image_count) ?? 0;
+  const performerCount =
+    (showAllDetails ? studio.performer_count_all : studio.performer_count) ?? 0;
+  const groupCount =
+    (showAllDetails ? studio.group_count_all : studio.group_count) ?? 0;
+
+  const populatedDefaultTab = useMemo(() => {
+    let ret: TabKey = "scenes";
+    if (sceneCount == 0) {
+      if (galleryCount != 0) {
+        ret = "galleries";
+      } else if (imageCount != 0) {
+        ret = "images";
+      } else if (performerCount != 0) {
+        ret = "performers";
+      } else if (groupCount != 0) {
+        ret = "groups";
+      } else if (studio.child_studios.length != 0) {
+        ret = "childstudios";
+      }
+    }
+
+    return ret;
+  }, [
+    sceneCount,
+    galleryCount,
+    imageCount,
+    performerCount,
+    groupCount,
+    studio,
+  ]);
+
+  const { setTabKey } = useTabKey({
+    tabKey,
+    validTabs,
+    defaultTabKey: populatedDefaultTab,
+    baseURL: `/studios/${studio.id}`,
+  });
+
+  const contentSwitch = useMemo(() => {
+    if (!studio.child_studios.length) {
+      return null;
+    }
+
+    return (
+      <div className="item-list-header">
+        <Form.Check
+          id="showSubContent"
+          checked={showAllDetails}
+          onChange={() => setShowAllDetails(!showAllDetails)}
+          type="switch"
+          label={<FormattedMessage id="include_sub_studio_content" />}
+        />
+      </div>
+    );
+  }, [showAllDetails, studio.child_studios.length]);
+
+  return (
+    <Tabs
+      id="studio-tabs"
+      mountOnEnter
+      unmountOnExit
+      activeKey={tabKey}
+      onSelect={setTabKey}
+    >
+      <Tab
+        eventKey="scenes"
+        title={
+          <TabTitleCounter
+            messageID="scenes"
+            count={sceneCount}
+            abbreviateCounter={abbreviateCounter}
+          />
+        }
+      >
+        {contentSwitch}
+        <StudioScenesPanel
+          active={tabKey === "scenes"}
+          studio={studio}
+          showChildStudioContent={showAllDetails}
+        />
+      </Tab>
+      <Tab
+        eventKey="galleries"
+        title={
+          <TabTitleCounter
+            messageID="galleries"
+            count={galleryCount}
+            abbreviateCounter={abbreviateCounter}
+          />
+        }
+      >
+        {contentSwitch}
+        <StudioGalleriesPanel
+          active={tabKey === "galleries"}
+          studio={studio}
+          showChildStudioContent={showAllDetails}
+        />
+      </Tab>
+      <Tab
+        eventKey="images"
+        title={
+          <TabTitleCounter
+            messageID="images"
+            count={imageCount}
+            abbreviateCounter={abbreviateCounter}
+          />
+        }
+      >
+        {contentSwitch}
+        <StudioImagesPanel
+          active={tabKey === "images"}
+          studio={studio}
+          showChildStudioContent={showAllDetails}
+        />
+      </Tab>
+      <Tab
+        eventKey="performers"
+        title={
+          <TabTitleCounter
+            messageID="performers"
+            count={performerCount}
+            abbreviateCounter={abbreviateCounter}
+          />
+        }
+      >
+        {contentSwitch}
+        <StudioPerformersPanel
+          active={tabKey === "performers"}
+          studio={studio}
+          showChildStudioContent={showAllDetails}
+        />
+      </Tab>
+      <Tab
+        eventKey="groups"
+        title={
+          <TabTitleCounter
+            messageID="groups"
+            count={groupCount}
+            abbreviateCounter={abbreviateCounter}
+          />
+        }
+      >
+        {contentSwitch}
+        <StudioGroupsPanel
+          active={tabKey === "groups"}
+          studio={studio}
+          showChildStudioContent={showAllDetails}
+        />
+      </Tab>
+      <Tab
+        eventKey="childstudios"
+        title={
+          <TabTitleCounter
+            messageID="subsidiary_studios"
+            count={studio.child_studios.length}
+            abbreviateCounter={abbreviateCounter}
+          />
+        }
+      >
+        <StudioChildrenPanel
+          active={tabKey === "childstudios"}
+          studio={studio}
+        />
+      </Tab>
+    </Tabs>
+  );
+};
+
+const StudioPage: React.FC<IProps> = ({ studio, tabKey }) => {
   const history = useHistory();
   const Toast = useToast();
   const intl = useIntl();
-  const { tab = "details" } = useParams<IStudioParams>();
 
   // Configuration settings
-  const { configuration } = React.useContext(ConfigurationContext);
-  const abbreviateCounter =
-    (configuration?.ui as IUIConfig)?.abbreviateCounters ?? false;
+  const { configuration } = useConfigurationContext();
+  const uiConfig = configuration?.ui;
+  const abbreviateCounter = uiConfig?.abbreviateCounters ?? false;
+  const enableBackgroundImage = uiConfig?.enableStudioBackgroundImage ?? false;
+  const showAllDetails = uiConfig?.showAllDetails ?? true;
+  const compactExpandedDetails = uiConfig?.compactExpandedDetails ?? false;
+
+  const [collapsed, setCollapsed] = useState<boolean>(!showAllDetails);
+  const loadStickyHeader = useLoadStickyHeader();
 
   // Editing state
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [isDeleteAlertOpen, setIsDeleteAlertOpen] = useState<boolean>(false);
 
-  // Studio state
+  // Editing studio state
   const [image, setImage] = useState<string | null>();
+  const [encodingImage, setEncodingImage] = useState<boolean>(false);
 
   const [updateStudio] = useStudioUpdate();
   const [deleteStudio] = useStudioDestroy({ id: studio.id });
 
+  const showAllCounts = uiConfig?.showChildStudioContent;
+
+  const studioImage = useMemo(() => {
+    const existingPath = studio.image_path;
+    if (isEditing) {
+      if (image === null && existingPath) {
+        const studioImageURL = new URL(existingPath);
+        studioImageURL.searchParams.set("default", "true");
+        return studioImageURL.toString();
+      } else if (image) {
+        return image;
+      }
+    }
+
+    return existingPath;
+  }, [isEditing, image, studio.image_path]);
+
+  function setFavorite(v: boolean) {
+    if (studio.id) {
+      updateStudio({
+        variables: {
+          input: {
+            id: studio.id,
+            favorite: v,
+          },
+        },
+      });
+    }
+  }
+
   // set up hotkeys
   useEffect(() => {
-    Mousetrap.bind("e", () => setIsEditing(true));
-    Mousetrap.bind("d d", () => onDelete());
+    Mousetrap.bind("e", () => toggleEditing());
+    Mousetrap.bind("d d", () => {
+      setIsDeleteAlertOpen(true);
+    });
+    Mousetrap.bind(",", () => setCollapsed(!collapsed));
+    Mousetrap.bind("f", () => setFavorite(!studio.favorite));
 
     return () => {
       Mousetrap.unbind("e");
       Mousetrap.unbind("d d");
+      Mousetrap.unbind(",");
+      Mousetrap.unbind("f");
     };
   });
 
-  function onImageLoad(imageData: string) {
-    setImage(imageData);
-  }
+  useRatingKeybinds(
+    true,
+    configuration?.ui.ratingSystemOptions?.type,
+    setRating
+  );
 
-  const imageEncoding = ImageUtils.usePasteImage(onImageLoad, isEditing);
-
-  async function onSave(input: Partial<GQL.StudioUpdateInput>) {
-    try {
-      const result = await updateStudio({
-        variables: {
-          input: input as GQL.StudioUpdateInput,
+  async function onSave(input: GQL.StudioCreateInput) {
+    await updateStudio({
+      variables: {
+        input: {
+          id: studio.id,
+          ...input,
         },
-      });
-      if (result.data?.studioUpdate) {
-        setIsEditing(false);
-      }
-    } catch (e) {
-      Toast.error(e);
-    }
+      },
+    });
+    toggleEditing(false);
+    Toast.success(
+      intl.formatMessage(
+        { id: "toast.updated_entity" },
+        { entity: intl.formatMessage({ id: "studio" }).toLocaleLowerCase() }
+      )
+    );
   }
 
   async function onAutoTag() {
     if (!studio.id) return;
     try {
       await mutateMetadataAutoTag({ studios: [studio.id] });
-      Toast.success({
-        content: intl.formatMessage({ id: "toast.started_auto_tagging" }),
-      });
+      Toast.success(intl.formatMessage({ id: "toast.started_auto_tagging" }));
     } catch (e) {
       Toast.error(e);
     }
@@ -111,15 +372,15 @@ const StudioPage: React.FC<IProps> = ({ studio }) => {
       await deleteStudio();
     } catch (e) {
       Toast.error(e);
+      return;
     }
 
-    // redirect to studios page
-    history.push(`/studios`);
+    goBackOrReplace(history, "/studios");
   }
 
   function renderDeleteAlert() {
     return (
-      <Modal
+      <ModalComponent
         show={isDeleteAlertOpen}
         icon={faTrashAlt}
         accept={{
@@ -139,185 +400,177 @@ const StudioPage: React.FC<IProps> = ({ studio }) => {
             }}
           />
         </p>
-      </Modal>
+      </ModalComponent>
     );
   }
 
-  function onToggleEdit() {
-    setIsEditing(!isEditing);
+  function toggleEditing(value?: boolean) {
+    if (value !== undefined) {
+      setIsEditing(value);
+    } else {
+      setIsEditing((e) => !e);
+    }
+    setImage(undefined);
   }
 
-  function renderImage() {
-    let studioImage = studio.image_path;
-    if (isEditing) {
-      if (image === null) {
-        studioImage = `${studioImage}&default=true`;
-      } else if (image) {
-        studioImage = image;
-      }
-    }
-
-    if (studioImage) {
-      return <img className="logo" alt={studio.name} src={studioImage} />;
+  function setRating(v: number | null) {
+    if (studio.id) {
+      updateStudio({
+        variables: {
+          input: {
+            id: studio.id,
+            rating100: v,
+          },
+        },
+      });
     }
   }
 
-  const activeTabKey =
-    tab === "childstudios" ||
-    tab === "images" ||
-    tab === "galleries" ||
-    tab === "performers" ||
-    tab === "movies"
-      ? tab
-      : "scenes";
-  const setActiveTabKey = (newTab: string | null) => {
-    if (tab !== newTab) {
-      const tabParam = newTab === "scenes" ? "" : `/${newTab}`;
-      history.replace(`/studios/${studio.id}${tabParam}`);
-    }
-  };
+  const headerClassName = cx("detail-header", {
+    edit: isEditing,
+    collapsed,
+    "full-width": !collapsed && !compactExpandedDetails,
+  });
 
   return (
-    <div className="row">
-      <div className="studio-details col-md-4">
-        <div className="text-center">
-          {imageEncoding ? (
-            <LoadingIndicator message="Encoding image..." />
-          ) : (
-            renderImage()
-          )}
+    <div id="studio-page" className="row">
+      <Helmet>
+        <title>{studio.name ?? intl.formatMessage({ id: "studio" })}</title>
+      </Helmet>
+
+      <div className={headerClassName}>
+        <BackgroundImage
+          imagePath={studio.image_path ?? undefined}
+          show={enableBackgroundImage && !isEditing}
+        />
+        <div className="detail-container">
+          <HeaderImage encodingImage={encodingImage}>
+            {studioImage && (
+              <DetailImage
+                className="logo"
+                alt={studio.name}
+                src={studioImage}
+              />
+            )}
+          </HeaderImage>
+          <div className="row">
+            <div className="studio-head col">
+              <DetailTitle name={studio.name ?? ""} classNamePrefix="studio">
+                {!isEditing && (
+                  <ExpandCollapseButton
+                    collapsed={collapsed}
+                    setCollapsed={(v) => setCollapsed(v)}
+                  />
+                )}
+                <span className="name-icons">
+                  <FavoriteIcon
+                    favorite={studio.favorite}
+                    onToggleFavorite={(v) => setFavorite(v)}
+                  />
+                  <ExternalLinkButtons urls={studio.urls} />
+                </span>
+              </DetailTitle>
+
+              <AliasList aliases={studio.aliases} />
+              <div className="quality-group">
+                <RatingSystem
+                  value={studio.rating100}
+                  onSetRating={(value) => setRating(value)}
+                  clickToRate
+                  withoutContext
+                />
+                {!!studio.o_counter && (
+                  <OCounterButton value={studio.o_counter} />
+                )}
+              </div>
+              {!isEditing && (
+                <StudioDetailsPanel
+                  studio={studio}
+                  collapsed={collapsed}
+                  fullWidth={!collapsed && !compactExpandedDetails}
+                />
+              )}
+              {isEditing ? (
+                <StudioEditPanel
+                  studio={studio}
+                  onSubmit={onSave}
+                  onCancel={() => toggleEditing()}
+                  onDelete={onDelete}
+                  setImage={setImage}
+                  setEncodingImage={setEncodingImage}
+                />
+              ) : (
+                <DetailsEditNavbar
+                  objectName={
+                    studio.name ?? intl.formatMessage({ id: "studio" })
+                  }
+                  isNew={false}
+                  isEditing={isEditing}
+                  onToggleEdit={() => toggleEditing()}
+                  onSave={() => {}}
+                  onImageChange={() => {}}
+                  onClearImage={() => {}}
+                  onAutoTag={onAutoTag}
+                  autoTagDisabled={studio.ignore_auto_tag}
+                  onDelete={onDelete}
+                />
+              )}
+            </div>
+          </div>
         </div>
-        {!isEditing ? (
-          <>
-            <Helmet>
-              <title>
-                {studio.name ?? intl.formatMessage({ id: "studio" })}
-              </title>
-            </Helmet>
-            <StudioDetailsPanel studio={studio} />
-            <DetailsEditNavbar
-              objectName={studio.name ?? intl.formatMessage({ id: "studio" })}
-              isNew={false}
-              isEditing={isEditing}
-              onToggleEdit={onToggleEdit}
-              onSave={() => {}}
-              onImageChange={() => {}}
-              onClearImage={() => {}}
-              onAutoTag={onAutoTag}
-              onDelete={onDelete}
-            />
-          </>
-        ) : (
-          <StudioEditPanel
-            studio={studio}
-            onSubmit={onSave}
-            onCancel={onToggleEdit}
-            onDelete={onDelete}
-            onImageChange={setImage}
-          />
-        )}
       </div>
-      <div className="col col-md-8">
-        <Tabs
-          id="studio-tabs"
-          mountOnEnter
-          unmountOnExit
-          activeKey={activeTabKey}
-          onSelect={setActiveTabKey}
-        >
-          <Tab
-            eventKey="scenes"
-            title={
-              <React.Fragment>
-                {intl.formatMessage({ id: "scenes" })}
-                <Counter
-                  abbreviateCounter={abbreviateCounter}
-                  count={studio.scene_count ?? 0}
-                />
-              </React.Fragment>
-            }
-          >
-            <StudioScenesPanel studio={studio} />
-          </Tab>
-          <Tab
-            eventKey="galleries"
-            title={
-              <React.Fragment>
-                {intl.formatMessage({ id: "galleries" })}
-                <Counter
-                  abbreviateCounter={abbreviateCounter}
-                  count={studio.gallery_count ?? 0}
-                />
-              </React.Fragment>
-            }
-          >
-            <StudioGalleriesPanel studio={studio} />
-          </Tab>
-          <Tab
-            eventKey="images"
-            title={
-              <React.Fragment>
-                {intl.formatMessage({ id: "images" })}
-                <Counter
-                  abbreviateCounter={abbreviateCounter}
-                  count={studio.image_count ?? 0}
-                />
-              </React.Fragment>
-            }
-          >
-            <StudioImagesPanel studio={studio} />
-          </Tab>
-          <Tab
-            eventKey="performers"
-            title={intl.formatMessage({ id: "performers" })}
-          >
-            <StudioPerformersPanel studio={studio} />
-          </Tab>
-          <Tab
-            eventKey="movies"
-            title={
-              <React.Fragment>
-                {intl.formatMessage({ id: "movies" })}
-                <Counter
-                  abbreviateCounter={abbreviateCounter}
-                  count={studio.movie_count ?? 0}
-                />
-              </React.Fragment>
-            }
-          >
-            <StudioMoviesPanel studio={studio} />
-          </Tab>
-          <Tab
-            eventKey="childstudios"
-            title={
-              <React.Fragment>
-                {intl.formatMessage({ id: "subsidiary_studios" })}
-                <Counter
-                  abbreviateCounter={false}
-                  count={studio.child_studios?.length ?? 0}
-                />
-              </React.Fragment>
-            }
-          >
-            <StudioChildrenPanel studio={studio} />
-          </Tab>
-        </Tabs>
+
+      {!isEditing && loadStickyHeader && (
+        <CompressedStudioDetailsPanel studio={studio} />
+      )}
+
+      <div className="detail-body">
+        <div className="studio-body">
+          <div className="studio-tabs">
+            {!isEditing && (
+              <StudioTabs
+                studio={studio}
+                tabKey={tabKey}
+                abbreviateCounter={abbreviateCounter}
+                showAllCounts={showAllCounts}
+              />
+            )}
+          </div>
+        </div>
       </div>
       {renderDeleteAlert()}
     </div>
   );
 };
 
-const StudioLoader: React.FC = () => {
-  const { id } = useParams<{ id?: string }>();
-  const { data, loading, error } = useFindStudio(id ?? "");
+const StudioLoader: React.FC<RouteComponentProps<IStudioParams>> = ({
+  location,
+  match,
+}) => {
+  const { id, tab } = match.params;
+  const { data, loading, error } = useFindStudio(id);
+
+  useScrollToTopOnMount();
 
   if (loading) return <LoadingIndicator />;
   if (error) return <ErrorMessage error={error.message} />;
   if (!data?.findStudio)
     return <ErrorMessage error={`No studio found with id ${id}.`} />;
 
-  return <StudioPage studio={data.findStudio} />;
+  if (tab && !isTabKey(tab)) {
+    return (
+      <Redirect
+        to={{
+          ...location,
+          pathname: `/studios/${id}`,
+        }}
+      />
+    );
+  }
+
+  return (
+    <StudioPage studio={data.findStudio} tabKey={tab as TabKey | undefined} />
+  );
 };
 
 export default StudioLoader;

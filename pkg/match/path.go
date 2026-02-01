@@ -1,3 +1,4 @@
+// Package match provides functions for matching paths to models.
 package match
 
 import (
@@ -7,14 +8,13 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/stashapp/stash/pkg/gallery"
 	"github.com/stashapp/stash/pkg/image"
 	"github.com/stashapp/stash/pkg/models"
 	"github.com/stashapp/stash/pkg/scene"
-	"github.com/stashapp/stash/pkg/sliceutil/stringslice"
-	"github.com/stashapp/stash/pkg/studio"
-	"github.com/stashapp/stash/pkg/tag"
+	"github.com/stashapp/stash/pkg/sliceutil"
 )
 
 const (
@@ -26,23 +26,6 @@ const (
 )
 
 var separatorRE = regexp.MustCompile(separatorPattern)
-
-type PerformerAutoTagQueryer interface {
-	Query(ctx context.Context, performerFilter *models.PerformerFilterType, findFilter *models.FindFilterType) ([]*models.Performer, int, error)
-	QueryForAutoTag(ctx context.Context, words []string) ([]*models.Performer, error)
-}
-
-type StudioAutoTagQueryer interface {
-	QueryForAutoTag(ctx context.Context, words []string) ([]*models.Studio, error)
-	studio.Queryer
-	GetAliases(ctx context.Context, studioID int) ([]string, error)
-}
-
-type TagAutoTagQueryer interface {
-	QueryForAutoTag(ctx context.Context, words []string) ([]*models.Tag, error)
-	tag.Queryer
-	GetAliases(ctx context.Context, tagID int) ([]string, error)
-}
 
 func getPathQueryRegex(name string) string {
 	// escape specific regex characters
@@ -76,7 +59,7 @@ func getPathWords(path string, trimExt bool) []string {
 	// remove any single letter words
 	var ret []string
 	for _, w := range words {
-		if len(w) > 1 {
+		if utf8.RuneCountInString(w) > 1 {
 			// #1450 - we need to open up the criteria for matching so that we
 			// can match where path has no space between subject names -
 			// ie name = "foo bar" - path = "foobar"
@@ -85,7 +68,7 @@ func getPathWords(path string, trimExt bool) []string {
 			// just use the first two characters
 			// #2293 - need to convert to unicode runes for the substring, otherwise
 			// the resulting string is corrupted.
-			ret = stringslice.StrAppendUnique(ret, string([]rune(w)[0:2]))
+			ret = sliceutil.AppendUnique(ret, string([]rune(w)[0:2]))
 		}
 	}
 
@@ -144,7 +127,7 @@ func regexpMatchesPath(r *regexp.Regexp, path string) int {
 	return found[len(found)-1][0]
 }
 
-func getPerformers(ctx context.Context, words []string, performerReader PerformerAutoTagQueryer, cache *Cache) ([]*models.Performer, error) {
+func getPerformers(ctx context.Context, words []string, performerReader models.PerformerAutoTagQueryer, cache *Cache) ([]*models.Performer, error) {
 	performers, err := performerReader.QueryForAutoTag(ctx, words)
 	if err != nil {
 		return nil, err
@@ -158,7 +141,7 @@ func getPerformers(ctx context.Context, words []string, performerReader Performe
 	return append(performers, swPerformers...), nil
 }
 
-func PathToPerformers(ctx context.Context, path string, reader PerformerAutoTagQueryer, cache *Cache, trimExt bool) ([]*models.Performer, error) {
+func PathToPerformers(ctx context.Context, path string, reader models.PerformerAutoTagQueryer, cache *Cache, trimExt bool) ([]*models.Performer, error) {
 	words := getPathWords(path, trimExt)
 
 	performers, err := getPerformers(ctx, words, reader, cache)
@@ -168,8 +151,27 @@ func PathToPerformers(ctx context.Context, path string, reader PerformerAutoTagQ
 
 	var ret []*models.Performer
 	for _, p := range performers {
-		// TODO - commenting out alias handling until both sides work correctly
-		if nameMatchesPath(p.Name, path) != -1 { // || nameMatchesPath(p.Aliases.String, path) {
+		matches := false
+		if nameMatchesPath(p.Name, path) != -1 {
+			matches = true
+		}
+
+		// TODO - disabled alias matching until we can get finer
+		// control over the matching
+		// if !matches {
+		// 	if err := p.LoadAliases(ctx, reader); err != nil {
+		// 		return nil, err
+		// 	}
+
+		// 	for _, alias := range p.Aliases.List() {
+		// 		if nameMatchesPath(alias, path) != -1 {
+		// 			matches = true
+		// 			break
+		// 		}
+		// 	}
+		// }
+
+		if matches {
 			ret = append(ret, p)
 		}
 	}
@@ -177,7 +179,7 @@ func PathToPerformers(ctx context.Context, path string, reader PerformerAutoTagQ
 	return ret, nil
 }
 
-func getStudios(ctx context.Context, words []string, reader StudioAutoTagQueryer, cache *Cache) ([]*models.Studio, error) {
+func getStudios(ctx context.Context, words []string, reader models.StudioAutoTagQueryer, cache *Cache) ([]*models.Studio, error) {
 	studios, err := reader.QueryForAutoTag(ctx, words)
 	if err != nil {
 		return nil, err
@@ -194,7 +196,7 @@ func getStudios(ctx context.Context, words []string, reader StudioAutoTagQueryer
 // PathToStudio returns the Studio that matches the given path.
 // Where multiple matching studios are found, the one that matches the latest
 // position in the path is returned.
-func PathToStudio(ctx context.Context, path string, reader StudioAutoTagQueryer, cache *Cache, trimExt bool) (*models.Studio, error) {
+func PathToStudio(ctx context.Context, path string, reader models.StudioAutoTagQueryer, cache *Cache, trimExt bool) (*models.Studio, error) {
 	words := getPathWords(path, trimExt)
 	candidates, err := getStudios(ctx, words, reader, cache)
 
@@ -205,7 +207,7 @@ func PathToStudio(ctx context.Context, path string, reader StudioAutoTagQueryer,
 	var ret *models.Studio
 	index := -1
 	for _, c := range candidates {
-		matchIndex := nameMatchesPath(c.Name.String, path)
+		matchIndex := nameMatchesPath(c.Name, path)
 		if matchIndex != -1 && matchIndex > index {
 			ret = c
 			index = matchIndex
@@ -228,7 +230,7 @@ func PathToStudio(ctx context.Context, path string, reader StudioAutoTagQueryer,
 	return ret, nil
 }
 
-func getTags(ctx context.Context, words []string, reader TagAutoTagQueryer, cache *Cache) ([]*models.Tag, error) {
+func getTags(ctx context.Context, words []string, reader models.TagAutoTagQueryer, cache *Cache) ([]*models.Tag, error) {
 	tags, err := reader.QueryForAutoTag(ctx, words)
 	if err != nil {
 		return nil, err
@@ -242,7 +244,7 @@ func getTags(ctx context.Context, words []string, reader TagAutoTagQueryer, cach
 	return append(tags, swTags...), nil
 }
 
-func PathToTags(ctx context.Context, path string, reader TagAutoTagQueryer, cache *Cache, trimExt bool) ([]*models.Tag, error) {
+func PathToTags(ctx context.Context, path string, reader models.TagAutoTagQueryer, cache *Cache, trimExt bool) ([]*models.Tag, error) {
 	words := getPathWords(path, trimExt)
 	tags, err := getTags(ctx, words, reader, cache)
 
@@ -278,7 +280,7 @@ func PathToTags(ctx context.Context, path string, reader TagAutoTagQueryer, cach
 	return ret, nil
 }
 
-func PathToScenes(ctx context.Context, name string, paths []string, sceneReader scene.Queryer) ([]*models.Scene, error) {
+func PathToScenesFn(ctx context.Context, name string, paths []string, sceneReader models.SceneQueryer, fn func(ctx context.Context, scene *models.Scene) error) error {
 	regex := getPathQueryRegex(name)
 	organized := false
 	filter := models.SceneFilterType{
@@ -291,31 +293,53 @@ func PathToScenes(ctx context.Context, name string, paths []string, sceneReader 
 
 	filter.And = scene.PathsFilter(paths)
 
-	pp := models.PerPageAll
-	scenes, err := scene.Query(ctx, sceneReader, &filter, &models.FindFilterType{
-		PerPage: &pp,
-	})
+	// do in batches
+	pp := 1000
+	sort := "id"
+	sortDir := models.SortDirectionEnumAsc
+	lastID := 0
 
-	if err != nil {
-		return nil, fmt.Errorf("error querying scenes with regex '%s': %s", regex, err.Error())
-	}
-
-	var ret []*models.Scene
-
-	// paths may have unicode characters
-	const useUnicode = true
-
-	r := nameToRegexp(name, useUnicode)
-	for _, p := range scenes {
-		if regexpMatchesPath(r, p.Path) != -1 {
-			ret = append(ret, p)
+	for {
+		if lastID != 0 {
+			filter.ID = &models.IntCriterionInput{
+				Value:    lastID,
+				Modifier: models.CriterionModifierGreaterThan,
+			}
 		}
+
+		scenes, err := scene.Query(ctx, sceneReader, &filter, &models.FindFilterType{
+			PerPage:   &pp,
+			Sort:      &sort,
+			Direction: &sortDir,
+		})
+
+		if err != nil {
+			return fmt.Errorf("error querying scenes with regex '%s': %s", regex, err.Error())
+		}
+
+		// paths may have unicode characters
+		const useUnicode = true
+
+		r := nameToRegexp(name, useUnicode)
+		for _, p := range scenes {
+			if regexpMatchesPath(r, p.Path) != -1 {
+				if err := fn(ctx, p); err != nil {
+					return fmt.Errorf("processing scene %s: %w", p.GetTitle(), err)
+				}
+			}
+		}
+
+		if len(scenes) < pp {
+			break
+		}
+
+		lastID = scenes[len(scenes)-1].ID
 	}
 
-	return ret, nil
+	return nil
 }
 
-func PathToImages(ctx context.Context, name string, paths []string, imageReader image.Queryer) ([]*models.Image, error) {
+func PathToImagesFn(ctx context.Context, name string, paths []string, imageReader models.ImageQueryer, fn func(ctx context.Context, scene *models.Image) error) error {
 	regex := getPathQueryRegex(name)
 	organized := false
 	filter := models.ImageFilterType{
@@ -328,31 +352,53 @@ func PathToImages(ctx context.Context, name string, paths []string, imageReader 
 
 	filter.And = image.PathsFilter(paths)
 
-	pp := models.PerPageAll
-	images, err := image.Query(ctx, imageReader, &filter, &models.FindFilterType{
-		PerPage: &pp,
-	})
+	// do in batches
+	pp := 1000
+	sort := "id"
+	sortDir := models.SortDirectionEnumAsc
+	lastID := 0
 
-	if err != nil {
-		return nil, fmt.Errorf("error querying images with regex '%s': %s", regex, err.Error())
-	}
-
-	var ret []*models.Image
-
-	// paths may have unicode characters
-	const useUnicode = true
-
-	r := nameToRegexp(name, useUnicode)
-	for _, p := range images {
-		if regexpMatchesPath(r, p.Path) != -1 {
-			ret = append(ret, p)
+	for {
+		if lastID != 0 {
+			filter.ID = &models.IntCriterionInput{
+				Value:    lastID,
+				Modifier: models.CriterionModifierGreaterThan,
+			}
 		}
+
+		images, err := image.Query(ctx, imageReader, &filter, &models.FindFilterType{
+			PerPage:   &pp,
+			Sort:      &sort,
+			Direction: &sortDir,
+		})
+
+		if err != nil {
+			return fmt.Errorf("error querying images with regex '%s': %s", regex, err.Error())
+		}
+
+		// paths may have unicode characters
+		const useUnicode = true
+
+		r := nameToRegexp(name, useUnicode)
+		for _, p := range images {
+			if regexpMatchesPath(r, p.Path) != -1 {
+				if err := fn(ctx, p); err != nil {
+					return fmt.Errorf("processing image %s: %w", p.GetTitle(), err)
+				}
+			}
+		}
+
+		if len(images) < pp {
+			break
+		}
+
+		lastID = images[len(images)-1].ID
 	}
 
-	return ret, nil
+	return nil
 }
 
-func PathToGalleries(ctx context.Context, name string, paths []string, galleryReader gallery.Queryer) ([]*models.Gallery, error) {
+func PathToGalleriesFn(ctx context.Context, name string, paths []string, galleryReader models.GalleryQueryer, fn func(ctx context.Context, scene *models.Gallery) error) error {
 	regex := getPathQueryRegex(name)
 	organized := false
 	filter := models.GalleryFilterType{
@@ -365,27 +411,49 @@ func PathToGalleries(ctx context.Context, name string, paths []string, galleryRe
 
 	filter.And = gallery.PathsFilter(paths)
 
-	pp := models.PerPageAll
-	gallerys, _, err := galleryReader.Query(ctx, &filter, &models.FindFilterType{
-		PerPage: &pp,
-	})
+	// do in batches
+	pp := 1000
+	sort := "id"
+	sortDir := models.SortDirectionEnumAsc
+	lastID := 0
 
-	if err != nil {
-		return nil, fmt.Errorf("error querying gallerys with regex '%s': %s", regex, err.Error())
-	}
-
-	var ret []*models.Gallery
-
-	// paths may have unicode characters
-	const useUnicode = true
-
-	r := nameToRegexp(name, useUnicode)
-	for _, p := range gallerys {
-		path := p.Path
-		if path != "" && regexpMatchesPath(r, path) != -1 {
-			ret = append(ret, p)
+	for {
+		if lastID != 0 {
+			filter.ID = &models.IntCriterionInput{
+				Value:    lastID,
+				Modifier: models.CriterionModifierGreaterThan,
+			}
 		}
+
+		galleries, _, err := galleryReader.Query(ctx, &filter, &models.FindFilterType{
+			PerPage:   &pp,
+			Sort:      &sort,
+			Direction: &sortDir,
+		})
+
+		if err != nil {
+			return fmt.Errorf("error querying galleries with regex '%s': %s", regex, err.Error())
+		}
+
+		// paths may have unicode characters
+		const useUnicode = true
+
+		r := nameToRegexp(name, useUnicode)
+		for _, p := range galleries {
+			path := p.Path
+			if path != "" && regexpMatchesPath(r, path) != -1 {
+				if err := fn(ctx, p); err != nil {
+					return fmt.Errorf("processing gallery %s: %w", p.GetTitle(), err)
+				}
+			}
+		}
+
+		if len(galleries) < pp {
+			break
+		}
+
+		lastID = galleries[len(galleries)-1].ID
 	}
 
-	return ret, nil
+	return nil
 }

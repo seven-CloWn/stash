@@ -1,24 +1,30 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   defineMessages,
   FormattedMessage,
   MessageDescriptor,
   useIntl,
 } from "react-intl";
-import { Nav, Navbar, Button, Fade } from "react-bootstrap";
+import { Nav, Navbar, Button } from "react-bootstrap";
 import { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import { LinkContainer } from "react-router-bootstrap";
 import { Link, NavLink, useLocation, useHistory } from "react-router-dom";
 import Mousetrap from "mousetrap";
 
-import { SessionUtils } from "src/utils";
-import Icon from "src/components/Shared/Icon";
-import { ConfigurationContext } from "src/hooks/Config";
+import SessionUtils from "src/utils/session";
+import { Icon } from "src/components/Shared/Icon";
+import { useConfigurationContext } from "src/hooks/Config";
 import { ManualStateContext } from "./Help/context";
 import { SettingsButton } from "./SettingsButton";
 import {
   faBars,
-  faChartBar,
+  faChartColumn,
   faFilm,
   faHeart,
   faImage,
@@ -32,6 +38,8 @@ import {
   faUser,
   faVideo,
 } from "@fortawesome/free-solid-svg-icons";
+import { baseURL } from "src/core/createClient";
+import { PatchComponent } from "src/patch";
 
 interface IMenuItem {
   name: string;
@@ -50,9 +58,9 @@ const messages = defineMessages({
     id: "images",
     defaultMessage: "Images",
   },
-  movies: {
-    id: "movies",
-    defaultMessage: "Movies",
+  groups: {
+    id: "groups",
+    defaultMessage: "Groups",
   },
   markers: {
     id: "markers",
@@ -104,9 +112,9 @@ const allMenuItems: IMenuItem[] = [
     hotkey: "g i",
   },
   {
-    name: "movies",
-    message: messages.movies,
-    href: "/movies",
+    name: "groups",
+    message: messages.groups,
+    href: "/groups",
     icon: faFilm,
     hotkey: "g v",
     userCreatable: true,
@@ -156,31 +164,50 @@ const newPathsList = allMenuItems
   .filter((item) => item.userCreatable)
   .map((item) => item.href);
 
+const MainNavbarMenuItems = PatchComponent(
+  "MainNavBar.MenuItems",
+  (props: React.PropsWithChildren<{}>) => {
+    return <Nav>{props.children}</Nav>;
+  }
+);
+
+const MainNavbarUtilityItems = PatchComponent(
+  "MainNavBar.UtilityItems",
+  (props: React.PropsWithChildren<{}>) => {
+    return <>{props.children}</>;
+  }
+);
+
 export const MainNavbar: React.FC = () => {
   const history = useHistory();
   const location = useLocation();
-  const { configuration, loading } = React.useContext(ConfigurationContext);
+  const { configuration } = useConfigurationContext();
   const { openManual } = React.useContext(ManualStateContext);
-
-  // Show all menu items by default, unless config says otherwise
-  const [menuItems, setMenuItems] = useState<IMenuItem[]>(allMenuItems);
 
   const [expanded, setExpanded] = useState(false);
 
-  useEffect(() => {
-    const iCfg = configuration?.interface;
-    if (iCfg?.menuItems) {
-      setMenuItems(
-        allMenuItems.filter((menuItem) =>
-          iCfg.menuItems!.includes(menuItem.name)
-        )
-      );
+  // Show all menu items by default, unless config says otherwise
+  const menuItems = useMemo(() => {
+    let cfgMenuItems = configuration?.interface.menuItems;
+    if (!cfgMenuItems) {
+      return allMenuItems;
     }
+
+    // translate old movies menu item to groups
+    cfgMenuItems = cfgMenuItems.map((item) => {
+      if (item === "movies") {
+        return "groups";
+      }
+      return item;
+    });
+
+    return allMenuItems.filter((menuItem) =>
+      cfgMenuItems!.includes(menuItem.name)
+    );
   }, [configuration]);
 
   // react-bootstrap typing bug
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const navbarRef = useRef<any>();
+  const navbarRef = useRef<HTMLElement | null>(null);
   const intl = useIntl();
 
   const maybeCollapse = useCallback(
@@ -219,10 +246,10 @@ export const MainNavbar: React.FC = () => {
 
   const pathname = location.pathname.replace(/\/$/, "");
   let newPath = newPathsList.includes(pathname) ? `${pathname}/new` : null;
-  if (newPath != null) {
+  if (newPath !== null) {
     let queryParam = new URLSearchParams(location.search).get("q");
-    if (queryParam != null) {
-      newPath += "?name=" + encodeURIComponent(queryParam);
+    if (queryParam) {
+      newPath += "?q=" + encodeURIComponent(queryParam);
     }
   }
 
@@ -255,7 +282,7 @@ export const MainNavbar: React.FC = () => {
       return (
         <Button
           className="minimal logout-button d-flex align-items-center"
-          href="/logout"
+          href={`${baseURL}logout`}
           title={intl.formatMessage({ id: "actions.logout" })}
         >
           <Icon icon={faSignOutAlt} />
@@ -295,7 +322,7 @@ export const MainNavbar: React.FC = () => {
             className="minimal d-flex align-items-center h-100"
             title={intl.formatMessage({ id: "statistics" })}
           >
-            <Icon icon={faChartBar} />
+            <Icon icon={faChartColumn} />
           </Button>
         </NavLink>
         <NavLink
@@ -332,31 +359,31 @@ export const MainNavbar: React.FC = () => {
         ref={navbarRef}
       >
         <Navbar.Collapse className="bg-dark order-sm-1">
-          <Fade in={!loading}>
-            <>
-              <Nav>
-                {menuItems.map(({ href, icon, message }) => (
-                  <Nav.Link
-                    eventKey={href}
-                    as="div"
-                    key={href}
-                    className="col-4 col-sm-3 col-md-2 col-lg-auto"
-                  >
-                    <LinkContainer activeClassName="active" exact to={href}>
-                      <Button className="minimal p-4 p-xl-2 d-flex d-xl-inline-block flex-column justify-content-between align-items-center">
-                        <Icon
-                          {...{ icon }}
-                          className="nav-menu-icon d-block d-xl-inline mb-2 mb-xl-0"
-                        />
-                        <span>{intl.formatMessage(message)}</span>
-                      </Button>
-                    </LinkContainer>
-                  </Nav.Link>
-                ))}
-              </Nav>
-              <Nav>{renderUtilityButtons()}</Nav>
-            </>
-          </Fade>
+          <MainNavbarMenuItems>
+            {menuItems.map(({ href, icon, message }) => (
+              <Nav.Link
+                eventKey={href}
+                as="div"
+                key={href}
+                className="col-4 col-sm-3 col-md-2 col-lg-auto"
+              >
+                <LinkContainer activeClassName="active" exact to={href}>
+                  <Button className="minimal p-4 p-xl-2 d-flex d-xl-inline-block flex-column justify-content-between align-items-center">
+                    <Icon
+                      {...{ icon }}
+                      className="nav-menu-icon d-block d-xl-inline mb-2 mb-xl-0"
+                    />
+                    <span>{intl.formatMessage(message)}</span>
+                  </Button>
+                </LinkContainer>
+              </Nav.Link>
+            ))}
+          </MainNavbarMenuItems>
+          <Nav>
+            <MainNavbarUtilityItems>
+              {renderUtilityButtons()}
+            </MainNavbarUtilityItems>
+          </Nav>
         </Navbar.Collapse>
 
         <Navbar.Brand as="div" onClick={handleDismiss}>
@@ -375,7 +402,9 @@ export const MainNavbar: React.FC = () => {
               </Link>
             </div>
           )}
-          {renderUtilityButtons()}
+          <MainNavbarUtilityItems>
+            {renderUtilityButtons()}
+          </MainNavbarUtilityItems>
           <Navbar.Toggle className="nav-menu-toggle ml-sm-2">
             <Icon icon={expanded ? faTimes : faBars} />
           </Navbar.Toggle>

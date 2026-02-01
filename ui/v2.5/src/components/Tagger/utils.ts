@@ -1,5 +1,7 @@
 import * as GQL from "src/core/generated-graphql";
 import { ParseMode } from "./constants";
+import { queryFindStudio } from "src/core/StashService";
+import { mergeStashIDs } from "src/utils/stashbox";
 
 const months = [
   "jan",
@@ -27,7 +29,9 @@ const MMddyyRegex = new RegExp(
   `(${months.join("|")})\\.?.(\\d{1,2}),?.(\\d{4})`,
   "i"
 );
-const parseDate = (input: string): string => {
+const javcodeRegex = /([a-zA-Z|tT28|tT38]+-\d+[zZeE]?)/;
+
+const handleSpecialStrings = (input: string): string => {
   let output = input;
   const ddmmyy = output.match(ddmmyyRegex);
   if (ddmmyy) {
@@ -65,12 +69,26 @@ const parseDate = (input: string): string => {
   }
 
   const yyyymmdd = output.search(yyyymmddRegex);
+  // if we find a date, then replace hyphens with spaces outside of the date
+  // replace dots with hyphens in the date
   if (yyyymmdd !== -1)
     return (
       output.slice(0, yyyymmdd).replace(/-/g, " ") +
       output.slice(yyyymmdd, yyyymmdd + 10).replace(/\./g, "-") +
       output.slice(yyyymmdd + 10).replace(/-/g, " ")
     );
+
+  const javcodeIndex = output.search(javcodeRegex);
+  // if we find a javcode, then replace hyphens with spaces outside of the javcode
+  if (javcodeIndex !== -1) {
+    const javcodeLength = output.match(javcodeRegex)![1].length;
+    return (
+      output.slice(0, javcodeIndex).replace(/-/g, " ") +
+      output.slice(javcodeIndex, javcodeIndex + javcodeLength) +
+      output.slice(javcodeIndex + javcodeLength).replace(/-/g, " ")
+    );
+  }
+  // otherwise just replace hyphens with spaces
   return output.replace(/-/g, " ");
 };
 
@@ -81,6 +99,17 @@ export function prepareQueryString(
   mode: ParseMode,
   blacklist: string[]
 ) {
+  const regexs = blacklist
+    .map((b) => {
+      try {
+        return new RegExp(b, "gi");
+      } catch {
+        // ignore
+        return null;
+      }
+    })
+    .filter((r) => r !== null) as RegExp[];
+
   if ((mode === "auto" && scene.date && scene.studio) || mode === "metadata") {
     let str = [
       scene.date,
@@ -90,8 +119,8 @@ export function prepareQueryString(
     ]
       .filter((s) => s !== "")
       .join(" ");
-    blacklist.forEach((b) => {
-      str = str.replace(new RegExp(b, "gi"), " ");
+    regexs.forEach((re) => {
+      str = str.replace(re, " ");
     });
     return str;
   }
@@ -104,19 +133,28 @@ export function prepareQueryString(
   } else if (mode === "dir" && paths.length) {
     s = paths[paths.length - 1];
   }
-  blacklist.forEach((b) => {
-    s = s.replace(new RegExp(b, "gi"), " ");
+
+  regexs.forEach((re) => {
+    s = s.replace(re, " ");
   });
-  s = parseDate(s);
-  return s.replace(/\./g, " ");
+  s = handleSpecialStrings(s);
+  return s.replace(/\./g, " ").replace(/ +/g, " ");
 }
 
 export const parsePath = (filePath: string) => {
+  if (!filePath) {
+    return {
+      paths: [],
+      file: "",
+      ext: "",
+    };
+  }
+
   const path = filePath.toLowerCase();
-  const isWin = /^([a-z]:|\\\\)/.test(path);
-  const normalizedPath = isWin
-    ? path.replace(/^[a-z]:/, "").replace(/\\/g, "/")
-    : path;
+  // Absolute paths on Windows start with a drive letter (e.g. C:\)
+  // Alternatively, they may start with a UNC path (e.g. \\server\share)
+  // Remove the drive letter/UNC and replace backslashes with forward slashes
+  const normalizedPath = path.replace(/^[a-z]:|\\\\/, "").replace(/\\/g, "/");
   const pathComponents = normalizedPath
     .split("/")
     .filter((component) => component.trim().length > 0);
@@ -124,10 +162,25 @@ export const parsePath = (filePath: string) => {
 
   const ext = fileName.match(/\.[a-z0-9]*$/)?.[0] ?? "";
   const file = fileName.slice(0, ext.length * -1);
-  const paths =
-    pathComponents.length >= 2
-      ? pathComponents.slice(0, pathComponents.length - 2)
-      : [];
+
+  // remove any .. or . paths
+  const paths = (
+    pathComponents.length >= 1
+      ? pathComponents.slice(0, pathComponents.length - 1)
+      : []
+  ).filter((p) => p !== ".." && p !== ".");
 
   return { paths, file, ext };
 };
+
+export async function mergeStudioStashIDs(
+  id: string,
+  newStashIDs: GQL.StashIdInput[]
+) {
+  const existing = await queryFindStudio(id);
+  if (existing?.data?.findStudio?.stash_ids) {
+    return mergeStashIDs(existing.data.findStudio.stash_ids, newStashIDs);
+  }
+
+  return newStashIDs;
+}

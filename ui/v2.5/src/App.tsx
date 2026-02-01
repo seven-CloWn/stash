@@ -1,11 +1,17 @@
-import React, { lazy, Suspense, useEffect, useState } from "react";
-import { Route, Switch, useRouteMatch } from "react-router-dom";
-import { IntlProvider, CustomFormats } from "react-intl";
+import React, { Suspense, useEffect, useState } from "react";
+import {
+  Route,
+  Switch,
+  useHistory,
+  useLocation,
+  useRouteMatch,
+} from "react-router-dom";
+import { IntlProvider, CustomFormats, FormattedMessage } from "react-intl";
 import { Helmet } from "react-helmet";
 import cloneDeep from "lodash-es/cloneDeep";
 import mergeWith from "lodash-es/mergeWith";
 import { ToastProvider } from "src/hooks/Toast";
-import LightboxProvider from "src/hooks/Lightbox/context";
+import { LightboxProvider } from "src/hooks/Lightbox/context";
 import { initPolyfills } from "src/polyfills";
 
 import locales, { registerCountry } from "src/locales";
@@ -14,43 +20,70 @@ import {
   useConfigureUI,
   useSystemStatus,
 } from "src/core/StashService";
-import { flattenMessages } from "src/utils";
+import flattenMessages from "./utils/flattenMessages";
+import * as yup from "yup";
 import Mousetrap from "mousetrap";
 import MousetrapPause from "mousetrap-pause";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { MainNavbar } from "./components/MainNavbar";
 import { PageNotFound } from "./components/PageNotFound";
 import * as GQL from "./core/generated-graphql";
-import { LoadingIndicator, TITLE_SUFFIX } from "./components/Shared";
+import { makeTitleProps } from "./hooks/title";
+import { LoadingIndicator } from "./components/Shared/LoadingIndicator";
 
-import { ConfigurationProvider } from "./hooks/Config";
+import {
+  ConfigurationProvider,
+  useConfigurationContextOptional,
+} from "./hooks/Config";
 import { ManualProvider } from "./components/Help/context";
 import { InteractiveProvider } from "./hooks/Interactive/context";
 import { ReleaseNotesDialog } from "./components/Dialogs/ReleaseNotesDialog";
-import { IUIConfig } from "./core/config";
 import { releaseNotes } from "./docs/en/ReleaseNotes";
-import { getPlatformURL, getBaseURL } from "./core/createClient";
+import { getPlatformURL } from "./core/createClient";
+import { lazyComponent } from "./utils/lazyComponent";
+import { isPlatformUniquelyRenderedByApple } from "./utils/apple";
+import Event from "./hooks/event";
 
-const Performers = lazy(() => import("./components/Performers/Performers"));
-const FrontPage = lazy(() => import("./components/FrontPage/FrontPage"));
-const Scenes = lazy(() => import("./components/Scenes/Scenes"));
-const Settings = lazy(() => import("./components/Settings/Settings"));
-const Stats = lazy(() => import("./components/Stats"));
-const Studios = lazy(() => import("./components/Studios/Studios"));
-const Galleries = lazy(() => import("./components/Galleries/Galleries"));
+import { PluginRoutes, PluginsLoader } from "./plugins";
 
-const Movies = lazy(() => import("./components/Movies/Movies"));
-const Tags = lazy(() => import("./components/Tags/Tags"));
-const Images = lazy(() => import("./components/Images/Images"));
-const Setup = lazy(() => import("./components/Setup/Setup"));
-const Migrate = lazy(() => import("./components/Setup/Migrate"));
+// import plugin_api to run code
+import "./pluginApi";
+import { ConnectionMonitor } from "./ConnectionMonitor";
+import { TroubleshootingModeOverlay } from "./components/TroubleshootingMode/TroubleshootingModeOverlay";
+import { PatchFunction } from "./patch";
 
-const SceneFilenameParser = lazy(
+import moment from "moment/min/moment-with-locales";
+import { ErrorMessage } from "./components/Shared/ErrorMessage";
+import cx from "classnames";
+
+const Performers = lazyComponent(
+  () => import("./components/Performers/Performers")
+);
+const FrontPage = lazyComponent(
+  () => import("./components/FrontPage/FrontPage")
+);
+const Scenes = lazyComponent(() => import("./components/Scenes/Scenes"));
+const Settings = lazyComponent(() => import("./components/Settings/Settings"));
+const Stats = lazyComponent(() => import("./components/Stats"));
+const Studios = lazyComponent(() => import("./components/Studios/Studios"));
+const Galleries = lazyComponent(
+  () => import("./components/Galleries/Galleries")
+);
+
+const Groups = lazyComponent(() => import("./components/Groups/Groups"));
+const Tags = lazyComponent(() => import("./components/Tags/Tags"));
+const Images = lazyComponent(() => import("./components/Images/Images"));
+const Setup = lazyComponent(() => import("./components/Setup/Setup"));
+const Migrate = lazyComponent(() => import("./components/Setup/Migrate"));
+
+const SceneFilenameParser = lazyComponent(
   () => import("./components/SceneFilenameParser/SceneFilenameParser")
 );
-const SceneDuplicateChecker = lazy(
+const SceneDuplicateChecker = lazyComponent(
   () => import("./components/SceneDuplicateChecker/SceneDuplicateChecker")
 );
+
+const appleRendering = isPlatformUniquelyRenderedByApple();
 
 initPolyfills();
 
@@ -68,6 +101,41 @@ function languageMessageString(language: string) {
   return language.replace(/-/, "");
 }
 
+const AppContainer: React.FC<React.PropsWithChildren<{}>> = PatchFunction(
+  "App",
+  (props: React.PropsWithChildren<{}>) => {
+    return <>{props.children}</>;
+  }
+) as React.FC;
+
+const MainContainer: React.FC = ({ children }) => {
+  // use optional here because the configuration may have be loading or errored
+  const { configuration } = useConfigurationContextOptional() || {};
+  const { sfwContentMode } = configuration?.interface || {};
+
+  return (
+    <div
+      className={cx("main container-fluid", {
+        apple: appleRendering,
+        "sfw-content-mode": sfwContentMode,
+      })}
+    >
+      {children}
+    </div>
+  );
+};
+
+function translateLanguageLocale(l: string) {
+  // intl doesn't support all locales, so we need to map some to supported ones
+  switch (l) {
+    case "nn-NO":
+      // use other Norwegian locale for intl
+      return "nb-NO";
+    default:
+      return l;
+  }
+}
+
 export const App: React.FC = () => {
   const config = useConfiguration();
   const [saveUI] = useConfigureUI();
@@ -76,9 +144,24 @@ export const App: React.FC = () => {
 
   const language =
     config.data?.configuration?.interface?.language ?? defaultLocale;
+  const intlLanguage = translateLanguageLocale(language);
 
   // use en-GB as default messages if any messages aren't found in the chosen language
   const [messages, setMessages] = useState<{}>();
+  const [customMessages, setCustomMessages] = useState<{}>();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(getPlatformURL("customlocales"));
+        if (res.ok) {
+          setCustomMessages(await res.json());
+        }
+      } catch (err) {
+        console.log(err);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const setLocale = async () => {
@@ -91,13 +174,6 @@ export const App: React.FC = () => {
       const defaultMessages = (await locales[defaultMessageLanguage]()).default;
       const mergedMessages = cloneDeep(Object.assign({}, defaultMessages));
       const chosenMessages = (await locales[messageLanguage]()).default;
-      const res = await fetch(getPlatformURL() + "customlocales");
-      let customMessages = {};
-      try {
-        customMessages = res.ok ? await res.json() : {};
-      } catch (err) {
-        console.log(err);
-      }
 
       mergeWith(
         mergedMessages,
@@ -110,13 +186,29 @@ export const App: React.FC = () => {
         }
       );
 
-      setMessages(flattenMessages(mergedMessages));
+      const newMessages = flattenMessages(mergedMessages);
+
+      yup.setLocale({
+        mixed: {
+          required: newMessages["validation.required"],
+        },
+      });
+
+      setMessages(newMessages);
+      moment.locale([language, defaultLocale]);
     };
 
     setLocale();
-  }, [language]);
+  }, [customMessages, language]);
 
+  const location = useLocation();
+  const history = useHistory();
   const setupMatch = useRouteMatch(["/setup", "/migrate"]);
+
+  // dispatch event when location changes
+  useEffect(() => {
+    Event.dispatch("location", "", { location });
+  }, [location]);
 
   // redirect to setup or migrate as needed
   useEffect(() => {
@@ -124,27 +216,24 @@ export const App: React.FC = () => {
       return;
     }
 
-    const baseURL = getBaseURL();
+    const { status } = systemStatusData.systemStatus;
 
     if (
-      window.location.pathname !== baseURL + "setup" &&
-      systemStatusData.systemStatus.status === GQL.SystemStatusEnum.Setup
+      location.pathname !== "/setup" &&
+      status === GQL.SystemStatusEnum.Setup
     ) {
       // redirect to setup page
-      const newURL = new URL("setup", window.location.origin + baseURL);
-      window.location.href = newURL.toString();
+      history.push("/setup");
     }
 
     if (
-      window.location.pathname !== baseURL + "migrate" &&
-      systemStatusData.systemStatus.status ===
-        GQL.SystemStatusEnum.NeedsMigration
+      location.pathname !== "/migrate" &&
+      status === GQL.SystemStatusEnum.NeedsMigration
     ) {
-      // redirect to setup page
-      const newURL = new URL("migrate", window.location.origin + baseURL);
-      window.location.href = newURL.toString();
+      // redirect to migrate page
+      history.replace("/migrate");
     }
-  }, [systemStatusData]);
+  }, [systemStatusData, setupMatch, history, location]);
 
   function maybeRenderNavbar() {
     // don't render navbar for setup views
@@ -169,7 +258,7 @@ export const App: React.FC = () => {
             <Route path="/performers" component={Performers} />
             <Route path="/tags" component={Tags} />
             <Route path="/studios" component={Studios} />
-            <Route path="/movies" component={Movies} />
+            <Route path="/groups" component={Groups} />
             <Route path="/stats" component={Stats} />
             <Route path="/settings" component={Settings} />
             <Route
@@ -182,6 +271,7 @@ export const App: React.FC = () => {
             />
             <Route path="/setup" component={Setup} />
             <Route path="/migrate" component={Migrate} />
+            <PluginRoutes />
             <Route component={PageNotFound} />
           </Switch>
         </Suspense>
@@ -190,12 +280,11 @@ export const App: React.FC = () => {
   }
 
   function maybeRenderReleaseNotes() {
-    if (setupMatch || config.loading || config.error) {
+    if (setupMatch || !systemStatusData || config.loading || config.error) {
       return;
     }
 
-    const lastNoteSeen = (config.data?.configuration.ui as IUIConfig)
-      ?.lastNoteSeen;
+    const lastNoteSeen = config.data?.configuration.ui.lastNoteSeen;
     const notes = releaseNotes.filter((n) => {
       return !lastNoteSeen || n.date > lastNoteSeen;
     });
@@ -204,7 +293,7 @@ export const App: React.FC = () => {
 
     return (
       <ReleaseNotesDialog
-        notes={notes.map((n) => n.content)}
+        notes={notes}
         onClose={() => {
           saveUI({
             variables: {
@@ -219,40 +308,78 @@ export const App: React.FC = () => {
     );
   }
 
+  const title = config.data?.configuration.ui.title || "Stash";
+  const titleProps = makeTitleProps(title);
+
+  if (!messages) {
+    return null;
+  }
+
+  function renderSimple(content: React.ReactNode) {
+    return (
+      <IntlProvider
+        locale={intlLanguage}
+        messages={messages}
+        formats={intlFormats}
+      >
+        <MainContainer>{content}</MainContainer>
+      </IntlProvider>
+    );
+  }
+
+  if (config.loading) {
+    return renderSimple(<LoadingIndicator />);
+  }
+
+  if (config.error) {
+    return renderSimple(
+      <ErrorMessage
+        message={
+          <FormattedMessage
+            id="errors.loading_type"
+            values={{ type: "configuration" }}
+          />
+        }
+        error={config.error.message}
+      />
+    );
+  }
+
   return (
     <ErrorBoundary>
-      {messages ? (
-        <IntlProvider
-          locale={language}
-          messages={messages}
-          formats={intlFormats}
-        >
-          <ConfigurationProvider
-            configuration={config.data?.configuration}
-            loading={config.loading}
+      <IntlProvider
+        locale={intlLanguage}
+        messages={messages}
+        formats={intlFormats}
+      >
+        <ToastProvider>
+          <PluginsLoader
+            disableCustomizations={
+              config.data?.configuration?.interface?.disableCustomizations ??
+              false
+            }
           >
-            {maybeRenderReleaseNotes()}
-            <ToastProvider>
-              <Suspense fallback={<LoadingIndicator />}>
-                <LightboxProvider>
-                  <ManualProvider>
-                    <InteractiveProvider>
-                      <Helmet
-                        titleTemplate={`%s ${TITLE_SUFFIX}`}
-                        defaultTitle="Stash"
-                      />
-                      {maybeRenderNavbar()}
-                      <div className="main container-fluid">
-                        {renderContent()}
-                      </div>
-                    </InteractiveProvider>
-                  </ManualProvider>
-                </LightboxProvider>
-              </Suspense>
-            </ToastProvider>
-          </ConfigurationProvider>
-        </IntlProvider>
-      ) : null}
+            <AppContainer>
+              <ConfigurationProvider configuration={config.data!.configuration}>
+                {maybeRenderReleaseNotes()}
+                <ConnectionMonitor />
+                <TroubleshootingModeOverlay />
+                <Suspense fallback={<LoadingIndicator />}>
+                  <LightboxProvider>
+                    <ManualProvider>
+                      <InteractiveProvider>
+                        <Helmet {...titleProps} />
+                        {maybeRenderNavbar()}
+                        <MainContainer>{renderContent()}</MainContainer>
+                      </InteractiveProvider>
+                    </ManualProvider>
+                  </LightboxProvider>
+                </Suspense>
+              </ConfigurationProvider>
+            </AppContainer>
+          </PluginsLoader>
+        </ToastProvider>
+      </IntlProvider>
     </ErrorBoundary>
   );
 };

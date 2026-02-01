@@ -1,33 +1,33 @@
 import React from "react";
 import { Form } from "react-bootstrap";
 import { defineMessages, MessageDescriptor, useIntl } from "react-intl";
-import { FilterSelect, ValidTypes } from "../../Shared";
-import { Criterion } from "../../../models/list-filter/criteria/criterion";
-import { IHierarchicalLabelValue } from "../../../models/list-filter/types";
+import { FilterSelect, SelectObject } from "src/components/Shared/Select";
+import { ModifierCriterion } from "src/models/list-filter/criteria/criterion";
+import { IHierarchicalLabelValue } from "src/models/list-filter/types";
+import { NumberField } from "src/utils/form";
 
 interface IHierarchicalLabelValueFilterProps {
-  criterion: Criterion<IHierarchicalLabelValue>;
+  criterion: ModifierCriterion<IHierarchicalLabelValue>;
   onValueChanged: (value: IHierarchicalLabelValue) => void;
 }
 
-export const HierarchicalLabelValueFilter: React.FC<IHierarchicalLabelValueFilterProps> = ({
-  criterion,
-  onValueChanged,
-}) => {
+export const HierarchicalLabelValueFilter: React.FC<
+  IHierarchicalLabelValueFilterProps
+> = ({ criterion, onValueChanged }) => {
+  const criterionOption = criterion.modifierCriterionOption();
+  const { type, inputType } = criterionOption;
+
   const intl = useIntl();
 
   if (
-    criterion.criterionOption.type !== "performers" &&
-    criterion.criterionOption.type !== "studios" &&
-    criterion.criterionOption.type !== "parent_studios" &&
-    criterion.criterionOption.type !== "tags" &&
-    criterion.criterionOption.type !== "sceneTags" &&
-    criterion.criterionOption.type !== "performerTags" &&
-    criterion.criterionOption.type !== "parentTags" &&
-    criterion.criterionOption.type !== "childTags" &&
-    criterion.criterionOption.type !== "movies"
-  )
+    inputType !== "studios" &&
+    inputType !== "tags" &&
+    inputType !== "scene_tags" &&
+    inputType !== "performer_tags" &&
+    inputType !== "groups"
+  ) {
     return null;
+  }
 
   const messages = defineMessages({
     studio_depth: {
@@ -36,11 +36,11 @@ export const HierarchicalLabelValueFilter: React.FC<IHierarchicalLabelValueFilte
     },
   });
 
-  function onSelectionChanged(items: ValidTypes[]) {
+  function onSelectionChanged(items: SelectObject[]) {
     const { value } = criterion;
     value.items = items.map((i) => ({
       id: i.id,
-      label: i.name!,
+      label: i.name ?? i.title ?? "",
     }));
     onValueChanged(value);
   }
@@ -52,24 +52,33 @@ export const HierarchicalLabelValueFilter: React.FC<IHierarchicalLabelValueFilte
   }
 
   function criterionOptionTypeToIncludeID(): string {
-    if (criterion.criterionOption.type === "studios") {
+    if (inputType === "studios") {
       return "include-sub-studios";
     }
-    if (criterion.criterionOption.type === "childTags") {
+    if (inputType === "groups") {
+      return "include-sub-groups";
+    }
+    if (type === "children") {
       return "include-parent-tags";
     }
+    console.log(inputType);
     return "include-sub-tags";
   }
 
   function criterionOptionTypeToIncludeUIString(): MessageDescriptor {
-    const optionType =
-      criterion.criterionOption.type === "studios"
-        ? "include_sub_studios"
-        : criterion.criterionOption.type === "childTags"
-        ? "include_parent_tags"
-        : "include_sub_tags";
+    let id: string;
+    if (inputType === "studios") {
+      id = "include_sub_studios";
+    } else if (inputType === "groups") {
+      id = "include_sub_groups";
+    } else if (type === "children") {
+      id = "include_parent_tags";
+    } else {
+      id = "include_sub_tags";
+    }
+
     return {
-      id: optionType,
+      id,
     };
   }
 
@@ -77,10 +86,11 @@ export const HierarchicalLabelValueFilter: React.FC<IHierarchicalLabelValueFilte
     <>
       <Form.Group>
         <FilterSelect
-          type={criterion.criterionOption.type}
+          type={inputType}
           isMulti
           onSelect={onSelectionChanged}
           ids={criterion.value.items.map((labeled) => labeled.id)}
+          menuPortalTarget={document.body}
         />
       </Form.Group>
 
@@ -95,9 +105,8 @@ export const HierarchicalLabelValueFilter: React.FC<IHierarchicalLabelValueFilte
 
       {criterion.value.depth !== 0 && (
         <Form.Group>
-          <Form.Control
+          <NumberField
             className="btn-secondary"
-            type="number"
             placeholder={intl.formatMessage(messages.studio_depth)}
             onChange={(e) =>
               onDepthChanged(e.target.value ? parseInt(e.target.value, 10) : -1)

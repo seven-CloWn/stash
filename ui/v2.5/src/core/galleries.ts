@@ -1,4 +1,4 @@
-import { TextUtils } from "src/utils";
+import TextUtils from "src/utils/text";
 import * as GQL from "src/core/generated-graphql";
 
 interface IFile {
@@ -6,7 +6,7 @@ interface IFile {
 }
 
 interface IGallery {
-  files: IFile[];
+  files: GQL.Maybe<IFile[]>;
   folder?: GQL.Maybe<IFile>;
 }
 

@@ -58,27 +58,39 @@ func (_m *StudioReaderWriter) Count(ctx context.Context) (int, error) {
 	return r0, r1
 }
 
-// Create provides a mock function with given fields: ctx, newStudio
-func (_m *StudioReaderWriter) Create(ctx context.Context, newStudio models.Studio) (*models.Studio, error) {
-	ret := _m.Called(ctx, newStudio)
+// CountByTagID provides a mock function with given fields: ctx, tagID
+func (_m *StudioReaderWriter) CountByTagID(ctx context.Context, tagID int) (int, error) {
+	ret := _m.Called(ctx, tagID)
 
-	var r0 *models.Studio
-	if rf, ok := ret.Get(0).(func(context.Context, models.Studio) *models.Studio); ok {
-		r0 = rf(ctx, newStudio)
+	var r0 int
+	if rf, ok := ret.Get(0).(func(context.Context, int) int); ok {
+		r0 = rf(ctx, tagID)
 	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*models.Studio)
-		}
+		r0 = ret.Get(0).(int)
 	}
 
 	var r1 error
-	if rf, ok := ret.Get(1).(func(context.Context, models.Studio) error); ok {
-		r1 = rf(ctx, newStudio)
+	if rf, ok := ret.Get(1).(func(context.Context, int) error); ok {
+		r1 = rf(ctx, tagID)
 	} else {
 		r1 = ret.Error(1)
 	}
 
 	return r0, r1
+}
+
+// Create provides a mock function with given fields: ctx, newStudio
+func (_m *StudioReaderWriter) Create(ctx context.Context, newStudio *models.Studio) error {
+	ret := _m.Called(ctx, newStudio)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *models.Studio) error); ok {
+		r0 = rf(ctx, newStudio)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
 }
 
 // Destroy provides a mock function with given fields: ctx, id
@@ -88,20 +100,6 @@ func (_m *StudioReaderWriter) Destroy(ctx context.Context, id int) error {
 	var r0 error
 	if rf, ok := ret.Get(0).(func(context.Context, int) error); ok {
 		r0 = rf(ctx, id)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// DestroyImage provides a mock function with given fields: ctx, studioID
-func (_m *StudioReaderWriter) DestroyImage(ctx context.Context, studioID int) error {
-	ret := _m.Called(ctx, studioID)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, int) error); ok {
-		r0 = rf(ctx, studioID)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -155,6 +153,29 @@ func (_m *StudioReaderWriter) FindByName(ctx context.Context, name string, nocas
 	return r0, r1
 }
 
+// FindBySceneID provides a mock function with given fields: ctx, sceneID
+func (_m *StudioReaderWriter) FindBySceneID(ctx context.Context, sceneID int) (*models.Studio, error) {
+	ret := _m.Called(ctx, sceneID)
+
+	var r0 *models.Studio
+	if rf, ok := ret.Get(0).(func(context.Context, int) *models.Studio); ok {
+		r0 = rf(ctx, sceneID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*models.Studio)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(context.Context, int) error); ok {
+		r1 = rf(ctx, sceneID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // FindByStashID provides a mock function with given fields: ctx, stashID
 func (_m *StudioReaderWriter) FindByStashID(ctx context.Context, stashID models.StashID) ([]*models.Studio, error) {
 	ret := _m.Called(ctx, stashID)
@@ -171,6 +192,29 @@ func (_m *StudioReaderWriter) FindByStashID(ctx context.Context, stashID models.
 	var r1 error
 	if rf, ok := ret.Get(1).(func(context.Context, models.StashID) error); ok {
 		r1 = rf(ctx, stashID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// FindByStashIDStatus provides a mock function with given fields: ctx, hasStashID, stashboxEndpoint
+func (_m *StudioReaderWriter) FindByStashIDStatus(ctx context.Context, hasStashID bool, stashboxEndpoint string) ([]*models.Studio, error) {
+	ret := _m.Called(ctx, hasStashID, stashboxEndpoint)
+
+	var r0 []*models.Studio
+	if rf, ok := ret.Get(0).(func(context.Context, bool, string) []*models.Studio); ok {
+		r0 = rf(ctx, hasStashID, stashboxEndpoint)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]*models.Studio)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(context.Context, bool, string) error); ok {
+		r1 = rf(ctx, hasStashID, stashboxEndpoint)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -224,13 +268,13 @@ func (_m *StudioReaderWriter) FindMany(ctx context.Context, ids []int) ([]*model
 	return r0, r1
 }
 
-// GetAliases provides a mock function with given fields: ctx, studioID
-func (_m *StudioReaderWriter) GetAliases(ctx context.Context, studioID int) ([]string, error) {
-	ret := _m.Called(ctx, studioID)
+// GetAliases provides a mock function with given fields: ctx, relatedID
+func (_m *StudioReaderWriter) GetAliases(ctx context.Context, relatedID int) ([]string, error) {
+	ret := _m.Called(ctx, relatedID)
 
 	var r0 []string
 	if rf, ok := ret.Get(0).(func(context.Context, int) []string); ok {
-		r0 = rf(ctx, studioID)
+		r0 = rf(ctx, relatedID)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).([]string)
@@ -239,7 +283,7 @@ func (_m *StudioReaderWriter) GetAliases(ctx context.Context, studioID int) ([]s
 
 	var r1 error
 	if rf, ok := ret.Get(1).(func(context.Context, int) error); ok {
-		r1 = rf(ctx, studioID)
+		r1 = rf(ctx, relatedID)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -280,6 +324,52 @@ func (_m *StudioReaderWriter) GetStashIDs(ctx context.Context, relatedID int) ([
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).([]models.StashID)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(context.Context, int) error); ok {
+		r1 = rf(ctx, relatedID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetTagIDs provides a mock function with given fields: ctx, relatedID
+func (_m *StudioReaderWriter) GetTagIDs(ctx context.Context, relatedID int) ([]int, error) {
+	ret := _m.Called(ctx, relatedID)
+
+	var r0 []int
+	if rf, ok := ret.Get(0).(func(context.Context, int) []int); ok {
+		r0 = rf(ctx, relatedID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]int)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(context.Context, int) error); ok {
+		r1 = rf(ctx, relatedID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetURLs provides a mock function with given fields: ctx, relatedID
+func (_m *StudioReaderWriter) GetURLs(ctx context.Context, relatedID int) ([]string, error) {
+	ret := _m.Called(ctx, relatedID)
+
+	var r0 []string
+	if rf, ok := ret.Get(0).(func(context.Context, int) []string); ok {
+		r0 = rf(ctx, relatedID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
 		}
 	}
 
@@ -344,6 +434,27 @@ func (_m *StudioReaderWriter) Query(ctx context.Context, studioFilter *models.St
 	return r0, r1, r2
 }
 
+// QueryCount provides a mock function with given fields: ctx, studioFilter, findFilter
+func (_m *StudioReaderWriter) QueryCount(ctx context.Context, studioFilter *models.StudioFilterType, findFilter *models.FindFilterType) (int, error) {
+	ret := _m.Called(ctx, studioFilter, findFilter)
+
+	var r0 int
+	if rf, ok := ret.Get(0).(func(context.Context, *models.StudioFilterType, *models.FindFilterType) int); ok {
+		r0 = rf(ctx, studioFilter, findFilter)
+	} else {
+		r0 = ret.Get(0).(int)
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(context.Context, *models.StudioFilterType, *models.FindFilterType) error); ok {
+		r1 = rf(ctx, studioFilter, findFilter)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // QueryForAutoTag provides a mock function with given fields: ctx, words
 func (_m *StudioReaderWriter) QueryForAutoTag(ctx context.Context, words []string) ([]*models.Studio, error) {
 	ret := _m.Called(ctx, words)
@@ -368,7 +479,35 @@ func (_m *StudioReaderWriter) QueryForAutoTag(ctx context.Context, words []strin
 }
 
 // Update provides a mock function with given fields: ctx, updatedStudio
-func (_m *StudioReaderWriter) Update(ctx context.Context, updatedStudio models.StudioPartial) (*models.Studio, error) {
+func (_m *StudioReaderWriter) Update(ctx context.Context, updatedStudio *models.Studio) error {
+	ret := _m.Called(ctx, updatedStudio)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *models.Studio) error); ok {
+		r0 = rf(ctx, updatedStudio)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateImage provides a mock function with given fields: ctx, studioID, image
+func (_m *StudioReaderWriter) UpdateImage(ctx context.Context, studioID int, image []byte) error {
+	ret := _m.Called(ctx, studioID, image)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, int, []byte) error); ok {
+		r0 = rf(ctx, studioID, image)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdatePartial provides a mock function with given fields: ctx, updatedStudio
+func (_m *StudioReaderWriter) UpdatePartial(ctx context.Context, updatedStudio models.StudioPartial) (*models.Studio, error) {
 	ret := _m.Called(ctx, updatedStudio)
 
 	var r0 *models.Studio
@@ -388,69 +527,4 @@ func (_m *StudioReaderWriter) Update(ctx context.Context, updatedStudio models.S
 	}
 
 	return r0, r1
-}
-
-// UpdateAliases provides a mock function with given fields: ctx, studioID, aliases
-func (_m *StudioReaderWriter) UpdateAliases(ctx context.Context, studioID int, aliases []string) error {
-	ret := _m.Called(ctx, studioID, aliases)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, int, []string) error); ok {
-		r0 = rf(ctx, studioID, aliases)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdateFull provides a mock function with given fields: ctx, updatedStudio
-func (_m *StudioReaderWriter) UpdateFull(ctx context.Context, updatedStudio models.Studio) (*models.Studio, error) {
-	ret := _m.Called(ctx, updatedStudio)
-
-	var r0 *models.Studio
-	if rf, ok := ret.Get(0).(func(context.Context, models.Studio) *models.Studio); ok {
-		r0 = rf(ctx, updatedStudio)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*models.Studio)
-		}
-	}
-
-	var r1 error
-	if rf, ok := ret.Get(1).(func(context.Context, models.Studio) error); ok {
-		r1 = rf(ctx, updatedStudio)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// UpdateImage provides a mock function with given fields: ctx, studioID, image
-func (_m *StudioReaderWriter) UpdateImage(ctx context.Context, studioID int, image []byte) error {
-	ret := _m.Called(ctx, studioID, image)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, int, []byte) error); ok {
-		r0 = rf(ctx, studioID, image)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdateStashIDs provides a mock function with given fields: ctx, studioID, stashIDs
-func (_m *StudioReaderWriter) UpdateStashIDs(ctx context.Context, studioID int, stashIDs []models.StashID) error {
-	ret := _m.Called(ctx, studioID, stashIDs)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, int, []models.StashID) error); ok {
-		r0 = rf(ctx, studioID, stashIDs)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
 }

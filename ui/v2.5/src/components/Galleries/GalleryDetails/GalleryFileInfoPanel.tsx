@@ -1,13 +1,13 @@
 import React, { useMemo, useState } from "react";
 import { Accordion, Button, Card } from "react-bootstrap";
-import { FormattedMessage } from "react-intl";
-import { TruncatedText } from "src/components/Shared";
-import DeleteFilesDialog from "src/components/Shared/DeleteFilesDialog";
+import { FormattedMessage, FormattedTime } from "react-intl";
+import { TruncatedText } from "src/components/Shared/TruncatedText";
+import { DeleteFilesDialog } from "src/components/Shared/DeleteFilesDialog";
 import * as GQL from "src/core/generated-graphql";
 import { mutateGallerySetPrimaryFile } from "src/core/StashService";
-import { useToast } from "src/hooks";
-import { TextUtils } from "src/utils";
-import { TextField, URLField } from "src/utils/field";
+import { useToast } from "src/hooks/Toast";
+import TextUtils from "src/utils/text";
+import { TextField, URLField, URLsField } from "src/utils/field";
 
 interface IFileInfoPanelProps {
   folder?: Pick<GQL.Folder, "id" | "path">;
@@ -44,6 +44,15 @@ const FileInfoPanel: React.FC<IFileInfoPanelProps> = (
           value={`file://${path}`}
           truncate
         />
+        {props.file && (
+          <TextField id="file_mod_time">
+            <FormattedTime
+              dateStyle="medium"
+              timeStyle="medium"
+              value={props.file.mod_time ?? 0}
+            />
+          </TextField>
+        )}
       </dl>
       {props.ofMany && props.onSetPrimaryFile && !props.primary && (
         <div>
@@ -138,12 +147,7 @@ export const GalleryFileInfoPanel: React.FC<IGalleryFileInfoPanelProps> = (
   return (
     <>
       <dl className="container gallery-file-info details-list">
-        <URLField
-          id="media_info.downloaded_from"
-          url={props.gallery.url}
-          value={props.gallery.url}
-          truncate
-        />
+        <URLsField id="urls" urls={props.gallery.urls} truncate />
       </dl>
 
       {filesPanel}

@@ -2,35 +2,20 @@ package api
 
 import (
 	"context"
-	"time"
 
 	"github.com/stashapp/stash/internal/api/loaders"
 	"github.com/stashapp/stash/internal/api/urlbuilders"
 	"github.com/stashapp/stash/pkg/gallery"
+	"github.com/stashapp/stash/pkg/group"
 	"github.com/stashapp/stash/pkg/image"
 	"github.com/stashapp/stash/pkg/models"
+	"github.com/stashapp/stash/pkg/performer"
+	"github.com/stashapp/stash/pkg/scene"
 )
 
-func (r *studioResolver) Name(ctx context.Context, obj *models.Studio) (string, error) {
-	if obj.Name.Valid {
-		return obj.Name.String, nil
-	}
-	panic("null name") // TODO make name required
-}
-
-func (r *studioResolver) URL(ctx context.Context, obj *models.Studio) (*string, error) {
-	if obj.URL.Valid {
-		return &obj.URL.String, nil
-	}
-	return nil, nil
-}
-
 func (r *studioResolver) ImagePath(ctx context.Context, obj *models.Studio) (*string, error) {
-	baseURL, _ := ctx.Value(BaseURLCtxKey).(string)
-	imagePath := urlbuilders.NewStudioURLBuilder(baseURL, obj).GetStudioImageURL()
-
 	var hasImage bool
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
 		var err error
 		hasImage, err = r.repository.Studio.HasImage(ctx, obj.ID)
 		return err
@@ -38,71 +23,154 @@ func (r *studioResolver) ImagePath(ctx context.Context, obj *models.Studio) (*st
 		return nil, err
 	}
 
-	// indicate that image is missing by setting default query param to true
-	if !hasImage {
-		imagePath += "?default=true"
-	}
-
+	baseURL, _ := ctx.Value(BaseURLCtxKey).(string)
+	imagePath := urlbuilders.NewStudioURLBuilder(baseURL, obj).GetStudioImageURL(hasImage)
 	return &imagePath, nil
 }
 
-func (r *studioResolver) Aliases(ctx context.Context, obj *models.Studio) (ret []string, err error) {
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		ret, err = r.repository.Studio.GetAliases(ctx, obj.ID)
-		return err
-	}); err != nil {
-		return nil, err
+func (r *studioResolver) Aliases(ctx context.Context, obj *models.Studio) ([]string, error) {
+	if !obj.Aliases.Loaded() {
+		if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+			return obj.LoadAliases(ctx, r.repository.Studio)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
-	return ret, err
+	return obj.Aliases.List(), nil
 }
 
-func (r *studioResolver) SceneCount(ctx context.Context, obj *models.Studio) (ret *int, err error) {
-	var res int
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		res, err = r.repository.Scene.CountByStudioID(ctx, obj.ID)
-		return err
-	}); err != nil {
-		return nil, err
+func (r *studioResolver) URL(ctx context.Context, obj *models.Studio) (*string, error) {
+	if !obj.URLs.Loaded() {
+		if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+			return obj.LoadURLs(ctx, r.repository.Studio)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
-	return &res, err
+	urls := obj.URLs.List()
+	if len(urls) == 0 {
+		return nil, nil
+	}
+
+	return &urls[0], nil
 }
 
-func (r *studioResolver) ImageCount(ctx context.Context, obj *models.Studio) (ret *int, err error) {
-	var res int
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		res, err = image.CountByStudioID(ctx, r.repository.Image, obj.ID)
-		return err
-	}); err != nil {
-		return nil, err
+func (r *studioResolver) Urls(ctx context.Context, obj *models.Studio) ([]string, error) {
+	if !obj.URLs.Loaded() {
+		if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+			return obj.LoadURLs(ctx, r.repository.Studio)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
-	return &res, nil
+	return obj.URLs.List(), nil
 }
 
-func (r *studioResolver) GalleryCount(ctx context.Context, obj *models.Studio) (ret *int, err error) {
+func (r *studioResolver) Tags(ctx context.Context, obj *models.Studio) (ret []*models.Tag, err error) {
+	if !obj.TagIDs.Loaded() {
+		if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+			return obj.LoadTagIDs(ctx, r.repository.Studio)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	var errs []error
+	ret, errs = loaders.From(ctx).TagByID.LoadAll(obj.TagIDs.List())
+	return ret, firstError(errs)
+}
+
+func (r *studioResolver) SceneCount(ctx context.Context, obj *models.Studio, depth *int) (ret int, err error) {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		ret, err = scene.CountByStudioID(ctx, r.repository.Scene, obj.ID, depth)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+
+	return ret, nil
+}
+
+func (r *studioResolver) ImageCount(ctx context.Context, obj *models.Studio, depth *int) (ret int, err error) {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		ret, err = image.CountByStudioID(ctx, r.repository.Image, obj.ID, depth)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+
+	return ret, nil
+}
+
+func (r *studioResolver) GalleryCount(ctx context.Context, obj *models.Studio, depth *int) (ret int, err error) {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		ret, err = gallery.CountByStudioID(ctx, r.repository.Gallery, obj.ID, depth)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+
+	return ret, nil
+}
+
+func (r *studioResolver) PerformerCount(ctx context.Context, obj *models.Studio, depth *int) (ret int, err error) {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		ret, err = performer.CountByStudioID(ctx, r.repository.Performer, obj.ID, depth)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+
+	return ret, nil
+}
+
+func (r *studioResolver) GroupCount(ctx context.Context, obj *models.Studio, depth *int) (ret int, err error) {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		ret, err = group.CountByStudioID(ctx, r.repository.Group, obj.ID, depth)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+
+	return ret, nil
+}
+
+// deprecated
+func (r *studioResolver) MovieCount(ctx context.Context, obj *models.Studio, depth *int) (ret int, err error) {
+	return r.GroupCount(ctx, obj, depth)
+}
+
+func (r *studioResolver) OCounter(ctx context.Context, obj *models.Studio) (ret *int, err error) {
+	var res_scene int
+	var res_image int
 	var res int
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		res, err = gallery.CountByStudioID(ctx, r.repository.Gallery, obj.ID)
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		res_scene, err = r.repository.Scene.OCountByStudioID(ctx, obj.ID)
+		if err != nil {
+			return err
+		}
+		res_image, err = r.repository.Image.OCountByStudioID(ctx, obj.ID)
 		return err
 	}); err != nil {
 		return nil, err
 	}
-
+	res = res_scene + res_image
 	return &res, nil
 }
 
 func (r *studioResolver) ParentStudio(ctx context.Context, obj *models.Studio) (ret *models.Studio, err error) {
-	if !obj.ParentID.Valid {
+	if obj.ParentID == nil {
 		return nil, nil
 	}
 
-	return loaders.From(ctx).StudioByID.Load(int(obj.ParentID.Int64))
+	return loaders.From(ctx).StudioByID.Load(*obj.ParentID)
 }
 
 func (r *studioResolver) ChildStudios(ctx context.Context, obj *models.Studio) (ret []*models.Studio, err error) {
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
 		ret, err = r.repository.Studio.FindChildren(ctx, obj.ID)
 		return err
 	}); err != nil {
@@ -113,44 +181,24 @@ func (r *studioResolver) ChildStudios(ctx context.Context, obj *models.Studio) (
 }
 
 func (r *studioResolver) StashIds(ctx context.Context, obj *models.Studio) ([]*models.StashID, error) {
-	var ret []models.StashID
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		var err error
-		ret, err = r.repository.Studio.GetStashIDs(ctx, obj.ID)
-		return err
-	}); err != nil {
-		return nil, err
+	if !obj.StashIDs.Loaded() {
+		if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+			return obj.LoadStashIDs(ctx, r.repository.Studio)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
-	return stashIDsSliceToPtrSlice(ret), nil
+	return stashIDsSliceToPtrSlice(obj.StashIDs.List()), nil
 }
 
-func (r *studioResolver) Rating(ctx context.Context, obj *models.Studio) (*int, error) {
-	if obj.Rating.Valid {
-		rating := int(obj.Rating.Int64)
-		return &rating, nil
-	}
-	return nil, nil
+func (r *studioResolver) Rating100(ctx context.Context, obj *models.Studio) (*int, error) {
+	return obj.Rating, nil
 }
 
-func (r *studioResolver) Details(ctx context.Context, obj *models.Studio) (*string, error) {
-	if obj.Details.Valid {
-		return &obj.Details.String, nil
-	}
-	return nil, nil
-}
-
-func (r *studioResolver) CreatedAt(ctx context.Context, obj *models.Studio) (*time.Time, error) {
-	return &obj.CreatedAt.Timestamp, nil
-}
-
-func (r *studioResolver) UpdatedAt(ctx context.Context, obj *models.Studio) (*time.Time, error) {
-	return &obj.UpdatedAt.Timestamp, nil
-}
-
-func (r *studioResolver) Movies(ctx context.Context, obj *models.Studio) (ret []*models.Movie, err error) {
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		ret, err = r.repository.Movie.FindByStudioID(ctx, obj.ID)
+func (r *studioResolver) Groups(ctx context.Context, obj *models.Studio) (ret []*models.Group, err error) {
+	if err := r.withReadTxn(ctx, func(ctx context.Context) error {
+		ret, err = r.repository.Group.FindByStudioID(ctx, obj.ID)
 		return err
 	}); err != nil {
 		return nil, err
@@ -159,14 +207,7 @@ func (r *studioResolver) Movies(ctx context.Context, obj *models.Studio) (ret []
 	return ret, nil
 }
 
-func (r *studioResolver) MovieCount(ctx context.Context, obj *models.Studio) (ret *int, err error) {
-	var res int
-	if err := r.withTxn(ctx, func(ctx context.Context) error {
-		res, err = r.repository.Movie.CountByStudioID(ctx, obj.ID)
-		return err
-	}); err != nil {
-		return nil, err
-	}
-
-	return &res, nil
+// deprecated
+func (r *studioResolver) Movies(ctx context.Context, obj *models.Studio) (ret []*models.Group, err error) {
+	return r.Groups(ctx, obj)
 }

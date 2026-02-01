@@ -5,13 +5,12 @@ package autotag
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/stashapp/stash/pkg/file"
+	"github.com/stashapp/stash/internal/manager/config"
 	"github.com/stashapp/stash/pkg/models"
 	"github.com/stashapp/stash/pkg/sqlite"
 	"github.com/stashapp/stash/pkg/txn"
@@ -64,7 +63,7 @@ func runTests(m *testing.M) int {
 		panic(fmt.Sprintf("Could not initialize database: %s", err.Error()))
 	}
 
-	r = db.TxnRepository()
+	r = db.Repository()
 
 	// defer close and delete the database
 	defer testTeardown(databaseFile)
@@ -79,6 +78,9 @@ func runTests(m *testing.M) int {
 }
 
 func TestMain(m *testing.M) {
+	// initialise empty config - needed by some db migrations
+	_ = config.InitializeEmpty()
+
 	ret := runTests(m)
 	os.Exit(ret)
 }
@@ -86,11 +88,10 @@ func TestMain(m *testing.M) {
 func createPerformer(ctx context.Context, pqb models.PerformerWriter) error {
 	// create the performer
 	performer := models.Performer{
-		Checksum: testName,
-		Name:     testName,
+		Name: testName,
 	}
 
-	err := pqb.Create(ctx, &performer)
+	err := pqb.Create(ctx, &models.CreatePerformerInput{Performer: &performer})
 	if err != nil {
 		return err
 	}
@@ -101,11 +102,15 @@ func createPerformer(ctx context.Context, pqb models.PerformerWriter) error {
 func createStudio(ctx context.Context, qb models.StudioWriter, name string) (*models.Studio, error) {
 	// create the studio
 	studio := models.Studio{
-		Checksum: name,
-		Name:     sql.NullString{Valid: true, String: name},
+		Name: name,
 	}
 
-	return qb.Create(ctx, studio)
+	err := qb.Create(ctx, &studio)
+	if err != nil {
+		return nil, err
+	}
+
+	return &studio, nil
 }
 
 func createTag(ctx context.Context, qb models.TagWriter) error {
@@ -114,7 +119,7 @@ func createTag(ctx context.Context, qb models.TagWriter) error {
 		Name: testName,
 	}
 
-	_, err := qb.Create(ctx, tag)
+	err := qb.Create(ctx, &tag)
 	if err != nil {
 		return err
 	}
@@ -122,12 +127,12 @@ func createTag(ctx context.Context, qb models.TagWriter) error {
 	return nil
 }
 
-func createScenes(ctx context.Context, sqb models.SceneReaderWriter, folderStore file.FolderStore, fileStore file.Store) error {
+func createScenes(ctx context.Context, sqb models.SceneReaderWriter, folderStore models.FolderFinderCreator, fileCreator models.FileCreator) error {
 	// create the scenes
 	scenePatterns, falseScenePatterns := generateTestPaths(testName, sceneExt)
 
 	for _, fn := range scenePatterns {
-		f, err := createSceneFile(ctx, fn, folderStore, fileStore)
+		f, err := createSceneFile(ctx, fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -139,7 +144,7 @@ func createScenes(ctx context.Context, sqb models.SceneReaderWriter, folderStore
 	}
 
 	for _, fn := range falseScenePatterns {
-		f, err := createSceneFile(ctx, fn, folderStore, fileStore)
+		f, err := createSceneFile(ctx, fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -152,7 +157,7 @@ func createScenes(ctx context.Context, sqb models.SceneReaderWriter, folderStore
 
 	// add organized scenes
 	for _, fn := range scenePatterns {
-		f, err := createSceneFile(ctx, "organized"+fn, folderStore, fileStore)
+		f, err := createSceneFile(ctx, "organized"+fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -166,14 +171,14 @@ func createScenes(ctx context.Context, sqb models.SceneReaderWriter, folderStore
 	}
 
 	// create scene with existing studio io
-	f, err := createSceneFile(ctx, existingStudioSceneName, folderStore, fileStore)
+	f, err := createSceneFile(ctx, existingStudioSceneName, folderStore, fileCreator)
 	if err != nil {
 		return err
 	}
 
 	s := &models.Scene{
 		Title:    expectedMatchTitle,
-		URL:      existingStudioSceneName,
+		Code:     existingStudioSceneName,
 		StudioID: &existingStudioID,
 	}
 	if err := createScene(ctx, sqb, s, f); err != nil {
@@ -194,7 +199,7 @@ func makeScene(expectedResult bool) *models.Scene {
 	return s
 }
 
-func createSceneFile(ctx context.Context, name string, folderStore file.FolderStore, fileStore file.Store) (*file.VideoFile, error) {
+func createSceneFile(ctx context.Context, name string, folderStore models.FolderFinderCreator, fileCreator models.FileCreator) (*models.VideoFile, error) {
 	folderPath := filepath.Dir(name)
 	basename := filepath.Base(name)
 
@@ -205,22 +210,22 @@ func createSceneFile(ctx context.Context, name string, folderStore file.FolderSt
 
 	folderID := folder.ID
 
-	f := &file.VideoFile{
-		BaseFile: &file.BaseFile{
+	f := &models.VideoFile{
+		BaseFile: &models.BaseFile{
 			Basename:       basename,
 			ParentFolderID: folderID,
 		},
 	}
 
-	if err := fileStore.Create(ctx, f); err != nil {
+	if err := fileCreator.Create(ctx, f); err != nil {
 		return nil, fmt.Errorf("creating scene file %q: %w", name, err)
 	}
 
 	return f, nil
 }
 
-func getOrCreateFolder(ctx context.Context, folderStore file.FolderStore, folderPath string) (*file.Folder, error) {
-	f, err := folderStore.FindByPath(ctx, folderPath)
+func getOrCreateFolder(ctx context.Context, folderStore models.FolderFinderCreator, folderPath string) (*models.Folder, error) {
+	f, err := folderStore.FindByPath(ctx, folderPath, true)
 	if err != nil {
 		return nil, fmt.Errorf("getting folder by path: %w", err)
 	}
@@ -229,7 +234,7 @@ func getOrCreateFolder(ctx context.Context, folderStore file.FolderStore, folder
 		return f, nil
 	}
 
-	var parentID file.FolderID
+	var parentID models.FolderID
 	dir := filepath.Dir(folderPath)
 	if dir != "." {
 		parent, err := getOrCreateFolder(ctx, folderStore, dir)
@@ -240,7 +245,7 @@ func getOrCreateFolder(ctx context.Context, folderStore file.FolderStore, folder
 		parentID = parent.ID
 	}
 
-	f = &file.Folder{
+	f = &models.Folder{
 		Path: folderPath,
 	}
 
@@ -255,8 +260,8 @@ func getOrCreateFolder(ctx context.Context, folderStore file.FolderStore, folder
 	return f, nil
 }
 
-func createScene(ctx context.Context, sqb models.SceneWriter, s *models.Scene, f *file.VideoFile) error {
-	err := sqb.Create(ctx, s, []file.ID{f.ID})
+func createScene(ctx context.Context, sqb models.SceneWriter, s *models.Scene, f *models.VideoFile) error {
+	err := sqb.Create(ctx, s, []models.FileID{f.ID})
 
 	if err != nil {
 		return fmt.Errorf("Failed to create scene with path '%s': %s", f.Path, err.Error())
@@ -265,12 +270,12 @@ func createScene(ctx context.Context, sqb models.SceneWriter, s *models.Scene, f
 	return nil
 }
 
-func createImages(ctx context.Context, w models.ImageReaderWriter, folderStore file.FolderStore, fileStore file.Store) error {
+func createImages(ctx context.Context, w models.ImageReaderWriter, folderStore models.FolderFinderCreator, fileCreator models.FileCreator) error {
 	// create the images
 	imagePatterns, falseImagePatterns := generateTestPaths(testName, imageExt)
 
 	for _, fn := range imagePatterns {
-		f, err := createImageFile(ctx, fn, folderStore, fileStore)
+		f, err := createImageFile(ctx, fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -281,7 +286,7 @@ func createImages(ctx context.Context, w models.ImageReaderWriter, folderStore f
 		}
 	}
 	for _, fn := range falseImagePatterns {
-		f, err := createImageFile(ctx, fn, folderStore, fileStore)
+		f, err := createImageFile(ctx, fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -294,7 +299,7 @@ func createImages(ctx context.Context, w models.ImageReaderWriter, folderStore f
 
 	// add organized images
 	for _, fn := range imagePatterns {
-		f, err := createImageFile(ctx, "organized"+fn, folderStore, fileStore)
+		f, err := createImageFile(ctx, "organized"+fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -308,7 +313,7 @@ func createImages(ctx context.Context, w models.ImageReaderWriter, folderStore f
 	}
 
 	// create image with existing studio io
-	f, err := createImageFile(ctx, existingStudioImageName, folderStore, fileStore)
+	f, err := createImageFile(ctx, existingStudioImageName, folderStore, fileCreator)
 	if err != nil {
 		return err
 	}
@@ -324,7 +329,7 @@ func createImages(ctx context.Context, w models.ImageReaderWriter, folderStore f
 	return nil
 }
 
-func createImageFile(ctx context.Context, name string, folderStore file.FolderStore, fileStore file.Store) (*file.ImageFile, error) {
+func createImageFile(ctx context.Context, name string, folderStore models.FolderFinderCreator, fileCreator models.FileCreator) (*models.ImageFile, error) {
 	folderPath := filepath.Dir(name)
 	basename := filepath.Base(name)
 
@@ -335,14 +340,14 @@ func createImageFile(ctx context.Context, name string, folderStore file.FolderSt
 
 	folderID := folder.ID
 
-	f := &file.ImageFile{
-		BaseFile: &file.BaseFile{
+	f := &models.ImageFile{
+		BaseFile: &models.BaseFile{
 			Basename:       basename,
 			ParentFolderID: folderID,
 		},
 	}
 
-	if err := fileStore.Create(ctx, f); err != nil {
+	if err := fileCreator.Create(ctx, f); err != nil {
 		return nil, err
 	}
 
@@ -360,11 +365,8 @@ func makeImage(expectedResult bool) *models.Image {
 	return o
 }
 
-func createImage(ctx context.Context, w models.ImageWriter, o *models.Image, f *file.ImageFile) error {
-	err := w.Create(ctx, &models.ImageCreateInput{
-		Image:   o,
-		FileIDs: []file.ID{f.ID},
-	})
+func createImage(ctx context.Context, w models.ImageWriter, o *models.Image, f *models.ImageFile) error {
+	err := w.Create(ctx, o, []models.FileID{f.ID})
 
 	if err != nil {
 		return fmt.Errorf("Failed to create image with path '%s': %s", f.Path, err.Error())
@@ -373,12 +375,12 @@ func createImage(ctx context.Context, w models.ImageWriter, o *models.Image, f *
 	return nil
 }
 
-func createGalleries(ctx context.Context, w models.GalleryReaderWriter, folderStore file.FolderStore, fileStore file.Store) error {
+func createGalleries(ctx context.Context, w models.GalleryReaderWriter, folderStore models.FolderFinderCreator, fileCreator models.FileCreator) error {
 	// create the galleries
 	galleryPatterns, falseGalleryPatterns := generateTestPaths(testName, galleryExt)
 
 	for _, fn := range galleryPatterns {
-		f, err := createGalleryFile(ctx, fn, folderStore, fileStore)
+		f, err := createGalleryFile(ctx, fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -389,7 +391,7 @@ func createGalleries(ctx context.Context, w models.GalleryReaderWriter, folderSt
 		}
 	}
 	for _, fn := range falseGalleryPatterns {
-		f, err := createGalleryFile(ctx, fn, folderStore, fileStore)
+		f, err := createGalleryFile(ctx, fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -402,7 +404,7 @@ func createGalleries(ctx context.Context, w models.GalleryReaderWriter, folderSt
 
 	// add organized galleries
 	for _, fn := range galleryPatterns {
-		f, err := createGalleryFile(ctx, "organized"+fn, folderStore, fileStore)
+		f, err := createGalleryFile(ctx, "organized"+fn, folderStore, fileCreator)
 		if err != nil {
 			return err
 		}
@@ -416,7 +418,7 @@ func createGalleries(ctx context.Context, w models.GalleryReaderWriter, folderSt
 	}
 
 	// create gallery with existing studio io
-	f, err := createGalleryFile(ctx, existingStudioGalleryName, folderStore, fileStore)
+	f, err := createGalleryFile(ctx, existingStudioGalleryName, folderStore, fileCreator)
 	if err != nil {
 		return err
 	}
@@ -432,7 +434,7 @@ func createGalleries(ctx context.Context, w models.GalleryReaderWriter, folderSt
 	return nil
 }
 
-func createGalleryFile(ctx context.Context, name string, folderStore file.FolderStore, fileStore file.Store) (*file.BaseFile, error) {
+func createGalleryFile(ctx context.Context, name string, folderStore models.FolderFinderCreator, fileCreator models.FileCreator) (*models.BaseFile, error) {
 	folderPath := filepath.Dir(name)
 	basename := filepath.Base(name)
 
@@ -443,12 +445,12 @@ func createGalleryFile(ctx context.Context, name string, folderStore file.Folder
 
 	folderID := folder.ID
 
-	f := &file.BaseFile{
+	f := &models.BaseFile{
 		Basename:       basename,
 		ParentFolderID: folderID,
 	}
 
-	if err := fileStore.Create(ctx, f); err != nil {
+	if err := fileCreator.Create(ctx, f); err != nil {
 		return nil, err
 	}
 
@@ -466,8 +468,8 @@ func makeGallery(expectedResult bool) *models.Gallery {
 	return o
 }
 
-func createGallery(ctx context.Context, w models.GalleryWriter, o *models.Gallery, f *file.BaseFile) error {
-	err := w.Create(ctx, o, []file.ID{f.ID})
+func createGallery(ctx context.Context, w models.GalleryWriter, o *models.Gallery, f *models.BaseFile) error {
+	err := w.Create(ctx, o, []models.FileID{f.ID})
 	if err != nil {
 		return fmt.Errorf("Failed to create gallery with path '%s': %s", f.Path, err.Error())
 	}
@@ -476,7 +478,11 @@ func createGallery(ctx context.Context, w models.GalleryWriter, o *models.Galler
 }
 
 func withTxn(f func(ctx context.Context) error) error {
-	return txn.WithTxn(context.TODO(), db, f)
+	return txn.WithTxn(testCtx, db, f)
+}
+
+func withDB(f func(ctx context.Context) error) error {
+	return txn.WithDatabase(testCtx, db, f)
 }
 
 func populateDB() error {
@@ -538,9 +544,16 @@ func TestParsePerformerScenes(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, p := range performers {
-		if err := withTxn(func(ctx context.Context) error {
-			return PerformerScenes(ctx, p, nil, r.Scene, nil)
+		if err := withDB(func(ctx context.Context) error {
+			if err := p.LoadAliases(ctx, r.Performer); err != nil {
+				return err
+			}
+			return tagger.PerformerScenes(ctx, p, nil, r.Scene)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -585,14 +598,18 @@ func TestParseStudioScenes(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, s := range studios {
-		if err := withTxn(func(ctx context.Context) error {
+		if err := withDB(func(ctx context.Context) error {
 			aliases, err := r.Studio.GetAliases(ctx, s.ID)
 			if err != nil {
 				return err
 			}
 
-			return StudioScenes(ctx, s, nil, aliases, r.Scene, nil)
+			return tagger.StudioScenes(ctx, s, nil, aliases, r.Scene)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -607,7 +624,7 @@ func TestParseStudioScenes(t *testing.T) {
 
 		for _, scene := range scenes {
 			// check for existing studio id scene first
-			if scene.URL == existingStudioSceneName {
+			if scene.Code == existingStudioSceneName {
 				if scene.StudioID == nil || *scene.StudioID != existingStudioID {
 					t.Error("Incorrectly overwrote studio ID for scene with existing studio ID")
 				}
@@ -641,14 +658,18 @@ func TestParseTagScenes(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, s := range tags {
-		if err := withTxn(func(ctx context.Context) error {
+		if err := withDB(func(ctx context.Context) error {
 			aliases, err := r.Tag.GetAliases(ctx, s.ID)
 			if err != nil {
 				return err
 			}
 
-			return TagScenes(ctx, s, nil, aliases, r.Scene, nil)
+			return tagger.TagScenes(ctx, s, nil, aliases, r.Scene)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -693,9 +714,16 @@ func TestParsePerformerImages(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, p := range performers {
-		if err := withTxn(func(ctx context.Context) error {
-			return PerformerImages(ctx, p, nil, r.Image, nil)
+		if err := withDB(func(ctx context.Context) error {
+			if err := p.LoadAliases(ctx, r.Performer); err != nil {
+				return err
+			}
+			return tagger.PerformerImages(ctx, p, nil, r.Image)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -741,14 +769,18 @@ func TestParseStudioImages(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, s := range studios {
-		if err := withTxn(func(ctx context.Context) error {
+		if err := withDB(func(ctx context.Context) error {
 			aliases, err := r.Studio.GetAliases(ctx, s.ID)
 			if err != nil {
 				return err
 			}
 
-			return StudioImages(ctx, s, nil, aliases, r.Image, nil)
+			return tagger.StudioImages(ctx, s, nil, aliases, r.Image)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -797,14 +829,18 @@ func TestParseTagImages(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, s := range tags {
-		if err := withTxn(func(ctx context.Context) error {
+		if err := withDB(func(ctx context.Context) error {
 			aliases, err := r.Tag.GetAliases(ctx, s.ID)
 			if err != nil {
 				return err
 			}
 
-			return TagImages(ctx, s, nil, aliases, r.Image, nil)
+			return tagger.TagImages(ctx, s, nil, aliases, r.Image)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -850,9 +886,16 @@ func TestParsePerformerGalleries(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, p := range performers {
-		if err := withTxn(func(ctx context.Context) error {
-			return PerformerGalleries(ctx, p, nil, r.Gallery, nil)
+		if err := withDB(func(ctx context.Context) error {
+			if err := p.LoadAliases(ctx, r.Performer); err != nil {
+				return err
+			}
+			return tagger.PerformerGalleries(ctx, p, nil, r.Gallery)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -898,14 +941,18 @@ func TestParseStudioGalleries(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, s := range studios {
-		if err := withTxn(func(ctx context.Context) error {
+		if err := withDB(func(ctx context.Context) error {
 			aliases, err := r.Studio.GetAliases(ctx, s.ID)
 			if err != nil {
 				return err
 			}
 
-			return StudioGalleries(ctx, s, nil, aliases, r.Gallery, nil)
+			return tagger.StudioGalleries(ctx, s, nil, aliases, r.Gallery)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}
@@ -954,14 +1001,18 @@ func TestParseTagGalleries(t *testing.T) {
 		return
 	}
 
+	tagger := Tagger{
+		TxnManager: db,
+	}
+
 	for _, s := range tags {
-		if err := withTxn(func(ctx context.Context) error {
+		if err := withDB(func(ctx context.Context) error {
 			aliases, err := r.Tag.GetAliases(ctx, s.ID)
 			if err != nil {
 				return err
 			}
 
-			return TagGalleries(ctx, s, nil, aliases, r.Gallery, nil)
+			return tagger.TagGalleries(ctx, s, nil, aliases, r.Gallery)
 		}); err != nil {
 			t.Errorf("Error auto-tagging performers: %s", err)
 		}

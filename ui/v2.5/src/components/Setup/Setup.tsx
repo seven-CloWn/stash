@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useContext } from "react";
+import React, { useState, useCallback } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import {
   Alert,
@@ -9,640 +9,1105 @@ import {
   InputGroup,
 } from "react-bootstrap";
 import * as GQL from "src/core/generated-graphql";
-import { mutateSetup, useSystemStatus } from "src/core/StashService";
-import { Link } from "react-router-dom";
-import { ConfigurationContext } from "src/hooks/Config";
+import {
+  mutateSetup,
+  useConfigureUI,
+  useSystemStatus,
+} from "src/core/StashService";
+import { useHistory } from "react-router-dom";
+import { useConfigurationContext } from "src/hooks/Config";
 import StashConfiguration from "../Settings/StashConfiguration";
-import { Icon, LoadingIndicator, Modal } from "../Shared";
+import { Icon } from "../Shared/Icon";
+import { LoadingIndicator } from "../Shared/LoadingIndicator";
+import { ModalComponent } from "../Shared/Modal";
 import { FolderSelectDialog } from "../Shared/FolderSelect/FolderSelectDialog";
 import {
   faEllipsisH,
   faExclamationTriangle,
   faQuestionCircle,
 } from "@fortawesome/free-solid-svg-icons";
+import { releaseNotes } from "src/docs/en/ReleaseNotes";
+import { ExternalLink } from "../Shared/ExternalLink";
 
-export const Setup: React.FC = () => {
-  const { configuration, loading: configLoading } = useContext(
-    ConfigurationContext
+interface ISetupContextState {
+  configuration: GQL.ConfigDataFragment;
+  systemStatus: GQL.SystemStatusQuery;
+
+  setupState: Partial<GQL.SetupInput>;
+  setupError: string | undefined;
+
+  pathJoin: (...paths: string[]) => string;
+  pathDir(path: string): string;
+
+  homeDir: string;
+  windows: boolean;
+  macApp: boolean;
+  homeDirPath: string;
+  pwd: string;
+  workingDir: string;
+}
+
+const SetupStateContext = React.createContext<ISetupContextState | null>(null);
+
+const useSetupContext = () => {
+  const context = React.useContext(SetupStateContext);
+
+  if (context === null) {
+    throw new Error("useSettings must be used within a SettingsContext");
+  }
+
+  return context;
+};
+
+const SetupContext: React.FC<{
+  setupState: Partial<GQL.SetupInput>;
+  setupError: string | undefined;
+  systemStatus: GQL.SystemStatusQuery;
+  configuration: GQL.ConfigDataFragment;
+}> = ({ setupState, setupError, systemStatus, configuration, children }) => {
+  const status = systemStatus?.systemStatus;
+
+  const windows = status?.os === "windows";
+  const pathSep = windows ? "\\" : "/";
+  const homeDir = windows ? "%USERPROFILE%" : "$HOME";
+  const pwd = windows ? "%CD%" : "$PWD";
+
+  const pathJoin = useCallback(
+    (...paths: string[]) => {
+      return paths.join(pathSep);
+    },
+    [pathSep]
   );
 
-  const [step, setStep] = useState(0);
-  const [configLocation, setConfigLocation] = useState("");
-  const [stashes, setStashes] = useState<GQL.StashConfig[]>([]);
-  const [showStashAlert, setShowStashAlert] = useState(false);
-  const [generatedLocation, setGeneratedLocation] = useState("");
-  const [databaseFile, setDatabaseFile] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [setupError, setSetupError] = useState("");
+  // simply returns everything preceding the last path separator
+  function pathDir(path: string) {
+    const lastSep = path.lastIndexOf(pathSep);
+    if (lastSep === -1) return "";
+    return path.slice(0, lastSep);
+  }
 
-  const intl = useIntl();
+  const workingDir = status?.workingDir ?? ".";
 
-  const [showGeneratedDialog, setShowGeneratedDialog] = useState(false);
+  // When running Stash.app, the working directory is (usually) set to /.
+  // Assume that the user doesn't want to set up in / (it's usually mounted read-only anyway),
+  // so in this situation disallow setting up in the working directory.
+  const macApp = status?.os === "darwin" && workingDir === "/";
 
-  const { data: systemStatus, loading: statusLoading } = useSystemStatus();
+  const homeDirPath = pathJoin(status?.homeDir ?? homeDir, ".stash");
 
-  useEffect(() => {
-    if (systemStatus?.systemStatus.configPath) {
-      setConfigLocation(systemStatus.systemStatus.configPath);
-    }
-  }, [systemStatus]);
+  const state: ISetupContextState = {
+    systemStatus,
+    configuration,
+    windows,
+    macApp,
+    pathJoin,
+    pathDir,
+    homeDir,
+    homeDirPath,
+    pwd,
+    workingDir,
+    setupState,
+    setupError,
+  };
 
-  useEffect(() => {
-    if (configuration) {
-      const { stashes: configStashes, generatedPath } = configuration.general;
-      if (configStashes.length > 0) {
-        setStashes(
-          configStashes.map((s) => {
-            const { __typename, ...withoutTypename } = s;
-            return withoutTypename;
-          })
-        );
-      }
-      if (generatedPath) {
-        setGeneratedLocation(generatedPath);
-      }
-    }
-  }, [configuration]);
-
-  const discordLink = (
-    <a href="https://discord.gg/2TsNFKt" target="_blank" rel="noreferrer">
-      Discord
-    </a>
+  return (
+    <SetupStateContext.Provider value={state}>
+      {children}
+    </SetupStateContext.Provider>
   );
-  const githubLink = (
-    <a
-      href="https://github.com/stashapp/stash/issues"
-      target="_blank"
-      rel="noreferrer"
-    >
-      <FormattedMessage id="setup.github_repository" />
-    </a>
-  );
+};
 
-  function onConfigLocationChosen(loc: string) {
-    setConfigLocation(loc);
-    next();
+interface IWizardStep {
+  next: (input?: Partial<GQL.SetupInput>) => void;
+  goBack: () => void;
+}
+
+const WelcomeSpecificConfig: React.FC<IWizardStep> = ({ next }) => {
+  const { systemStatus } = useSetupContext();
+  const status = systemStatus?.systemStatus;
+  const overrideConfig = status?.configPath;
+
+  function onNext() {
+    next({ configLocation: overrideConfig! });
   }
 
-  function goBack(n?: number) {
-    let dec = n;
-    if (!dec) {
-      dec = 1;
-    }
-    setStep(Math.max(0, step - dec));
-  }
-
-  function next() {
-    setStep(step + 1);
-  }
-
-  function confirmPaths() {
-    if (stashes.length > 0) {
-      next();
-      return;
-    }
-
-    setShowStashAlert(true);
-  }
-
-  function maybeRenderStashAlert() {
-    if (!showStashAlert) {
-      return;
-    }
-
-    return (
-      <Modal
-        show
-        icon={faExclamationTriangle}
-        accept={{
-          text: intl.formatMessage({ id: "actions.confirm" }),
-          variant: "danger",
-          onClick: () => {
-            setShowStashAlert(false);
-            next();
-          },
-        }}
-        cancel={{ onClick: () => setShowStashAlert(false) }}
-      >
-        <p>
-          <FormattedMessage id="setup.paths.stash_alert" />
+  return (
+    <>
+      <section>
+        <h2 className="mb-5">
+          <FormattedMessage id="setup.welcome_to_stash" />
+        </h2>
+        <p className="lead text-center">
+          <FormattedMessage id="setup.welcome_specific_config.unable_to_locate_specified_config" />
         </p>
-      </Modal>
-    );
+        <p>
+          <FormattedMessage
+            id="setup.welcome_specific_config.config_path"
+            values={{
+              path: overrideConfig,
+              code: (chunks: string) => <code>{chunks}</code>,
+            }}
+          />
+        </p>
+        <p>
+          <FormattedMessage id="setup.welcome_specific_config.next_step" />
+        </p>
+      </section>
+
+      <section className="mt-5">
+        <div className="d-flex justify-content-center">
+          <Button variant="primary mx-2 p-5" onClick={() => onNext()}>
+            <FormattedMessage id="actions.next_action" />
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+const DefaultWelcomeStep: React.FC<IWizardStep> = ({ next }) => {
+  const { pathJoin, homeDir, macApp, homeDirPath, pwd, workingDir } =
+    useSetupContext();
+
+  const fallbackStashDir = pathJoin(homeDir, ".stash");
+  const fallbackConfigPath = pathJoin(fallbackStashDir, "config.yml");
+
+  function onConfigLocationChosen(inWorkingDir: boolean) {
+    const configLocation = inWorkingDir ? "config.yml" : "";
+    next({ configLocation });
   }
 
-  function renderWelcomeSpecificConfig() {
-    return (
-      <>
-        <section>
-          <h2 className="mb-5">
-            <FormattedMessage id="setup.welcome_to_stash" />
-          </h2>
-          <p className="lead text-center">
-            <FormattedMessage id="setup.welcome_specific_config.unable_to_locate_specified_config" />
-          </p>
-          <p>
-            <FormattedMessage
-              id="setup.welcome_specific_config.config_path"
-              values={{
-                path: configLocation,
-                code: (chunks: string) => <code>{chunks}</code>,
-              }}
-            />
-          </p>
-          <p>
-            <FormattedMessage id="setup.welcome_specific_config.next_step" />
-          </p>
-        </section>
-
-        <section className="mt-5">
-          <div className="d-flex justify-content-center">
-            <Button variant="primary mx-2 p-5" onClick={() => next()}>
-              <FormattedMessage id="actions.next_action" />
-            </Button>
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function renderWelcome() {
-    return (
-      <>
-        <section>
-          <h2 className="mb-5">
-            <FormattedMessage id="setup.welcome_to_stash" />
-          </h2>
-          <p className="lead text-center">
-            <FormattedMessage id="setup.welcome.unable_to_locate_config" />
-          </p>
-          <p>
-            <FormattedMessage
-              id="setup.welcome.config_path_logic_explained"
-              values={{
-                code: (chunks: string) => <code>{chunks}</code>,
-              }}
-            />
-          </p>
-          <Alert variant="info text-center">
-            <FormattedMessage
-              id="setup.welcome.unexpected_explained"
-              values={{
-                code: (chunks: string) => <code>{chunks}</code>,
-              }}
-            />
-          </Alert>
-          <p>
-            <FormattedMessage id="setup.welcome.next_step" />
-          </p>
-        </section>
-
-        <section className="mt-5">
-          <h3 className="text-center mb-5">
-            <FormattedMessage id="setup.welcome.store_stash_config" />
-          </h3>
-
-          <div className="d-flex justify-content-center">
-            <Button
-              variant="secondary mx-2 p-5"
-              onClick={() => onConfigLocationChosen("")}
-            >
-              <FormattedMessage
-                id="setup.welcome.in_current_stash_directory"
-                values={{
-                  code: (chunks: string) => <code>{chunks}</code>,
-                }}
-              />
-            </Button>
-            <Button
-              variant="secondary mx-2 p-5"
-              onClick={() => onConfigLocationChosen("config.yml")}
-            >
-              <FormattedMessage id="setup.welcome.in_the_current_working_directory" />
-            </Button>
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function onGeneratedClosed(d?: string) {
-    if (d) {
-      setGeneratedLocation(d);
-    }
-
-    setShowGeneratedDialog(false);
-  }
-
-  function maybeRenderGeneratedSelectDialog() {
-    if (!showGeneratedDialog) {
-      return;
-    }
-
-    return <FolderSelectDialog onClose={onGeneratedClosed} />;
-  }
-
-  function maybeRenderGenerated() {
-    if (!configuration?.general.generatedPath) {
-      return (
-        <Form.Group id="generated">
-          <h3>
-            <FormattedMessage id="setup.paths.where_can_stash_store_its_generated_content" />
-          </h3>
-          <p>
-            <FormattedMessage
-              id="setup.paths.where_can_stash_store_its_generated_content_description"
-              values={{
-                code: (chunks: string) => <code>{chunks}</code>,
-              }}
-            />
-          </p>
-          <InputGroup>
-            <Form.Control
-              className="text-input"
-              value={generatedLocation}
-              placeholder={intl.formatMessage({
-                id: "setup.paths.path_to_generated_directory_empty_for_default",
-              })}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setGeneratedLocation(e.currentTarget.value)
-              }
-            />
-            <InputGroup.Append>
-              <Button
-                variant="secondary"
-                className="text-input"
-                onClick={() => setShowGeneratedDialog(true)}
-              >
-                <Icon icon={faEllipsisH} />
-              </Button>
-            </InputGroup.Append>
-          </InputGroup>
-        </Form.Group>
-      );
-    }
-  }
-
-  function renderSetPaths() {
-    return (
-      <>
-        {maybeRenderStashAlert()}
-        <section>
-          <h2 className="mb-3">
-            <FormattedMessage id="setup.paths.set_up_your_paths" />
-          </h2>
-          <p>
-            <FormattedMessage id="setup.paths.description" />
-          </p>
-        </section>
-        <section>
-          <Form.Group id="stashes">
-            <h3>
-              <FormattedMessage id="setup.paths.where_is_your_porn_located" />
-            </h3>
-            <p>
-              <FormattedMessage id="setup.paths.where_is_your_porn_located_description" />
-            </p>
-            <Card>
-              <StashConfiguration
-                stashes={stashes}
-                setStashes={(s) => setStashes(s)}
-              />
-            </Card>
-          </Form.Group>
-          <Form.Group id="database">
-            <h3>
-              <FormattedMessage id="setup.paths.where_can_stash_store_its_database" />
-            </h3>
-            <p>
-              <FormattedMessage
-                id="setup.paths.where_can_stash_store_its_database_description"
-                values={{
-                  code: (chunks: string) => <code>{chunks}</code>,
-                }}
-              />
-            </p>
-            <Form.Control
-              className="text-input"
-              defaultValue={databaseFile}
-              placeholder={intl.formatMessage({
-                id: "setup.paths.database_filename_empty_for_default",
-              })}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setDatabaseFile(e.currentTarget.value)
-              }
-            />
-          </Form.Group>
-          {maybeRenderGenerated()}
-        </section>
-        <section className="mt-5">
-          <div className="d-flex justify-content-center">
-            <Button variant="secondary mx-2 p-5" onClick={() => goBack()}>
-              <FormattedMessage id="actions.previous_action" />
-            </Button>
-            <Button variant="primary mx-2 p-5" onClick={() => confirmPaths()}>
-              <FormattedMessage id="actions.next_action" />
-            </Button>
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function renderConfigLocation() {
-    if (configLocation === "config.yml") {
-      return <code>&lt;current working directory&gt;/config.yml</code>;
-    }
-
-    if (configLocation === "") {
-      return <code>$HOME/.stash/config.yml</code>;
-    }
-
-    return <code>{configLocation}</code>;
-  }
-
-  function maybeRenderExclusions(s: GQL.StashConfig) {
-    if (!s.excludeImage && !s.excludeVideo) {
-      return;
-    }
-
-    const excludes = [];
-    if (s.excludeVideo) {
-      excludes.push("videos");
-    }
-    if (s.excludeImage) {
-      excludes.push("images");
-    }
-
-    return `(excludes ${excludes.join(" and ")})`;
-  }
-
-  function renderStashLibraries() {
-    return (
-      <ul>
-        {stashes.map((s) => (
-          <li key={s.path}>
-            <code>{s.path} </code>
-            {maybeRenderExclusions(s)}
-          </li>
-        ))}
-      </ul>
-    );
-  }
-
-  async function onSave() {
-    try {
-      setLoading(true);
-      await mutateSetup({
-        configLocation,
-        databaseFile,
-        generatedLocation,
-        stashes,
-      });
-    } catch (e) {
-      if (e instanceof Error) setSetupError(e.message ?? e.toString());
-    } finally {
-      setLoading(false);
-      next();
-    }
-  }
-
-  function renderConfirm() {
-    return (
-      <>
-        <section>
-          <h2 className="mb-3">
-            <FormattedMessage id="setup.confirm.nearly_there" />
-          </h2>
-          <p>
-            <FormattedMessage id="setup.confirm.almost_ready" />
-          </p>
-          <dl>
-            <dt>
-              <FormattedMessage id="setup.confirm.configuration_file_location" />
-            </dt>
-            <dd>{renderConfigLocation()}</dd>
-          </dl>
-          <dl>
-            <dt>
-              <FormattedMessage id="setup.confirm.stash_library_directories" />
-            </dt>
-            <dd>{renderStashLibraries()}</dd>
-          </dl>
-          <dl>
-            <dt>
-              <FormattedMessage id="setup.confirm.database_file_path" />
-            </dt>
-            <dd>
-              <code>
-                {databaseFile !== ""
-                  ? databaseFile
-                  : intl.formatMessage({
-                      id: "setup.confirm.default_db_location",
-                    })}
-              </code>
-            </dd>
-          </dl>
-          <dl>
-            <dt>
-              <FormattedMessage id="setup.confirm.generated_directory" />
-            </dt>
-            <dd>
-              <code>
-                {generatedLocation !== ""
-                  ? generatedLocation
-                  : intl.formatMessage({
-                      id: "setup.confirm.default_generated_content_location",
-                    })}
-              </code>
-            </dd>
-          </dl>
-        </section>
-        <section className="mt-5">
-          <div className="d-flex justify-content-center">
-            <Button variant="secondary mx-2 p-5" onClick={() => goBack()}>
-              <FormattedMessage id="actions.previous_action" />
-            </Button>
-            <Button variant="success mx-2 p-5" onClick={() => onSave()}>
-              <FormattedMessage id="actions.confirm" />
-            </Button>
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function renderError() {
-    return (
-      <>
-        <section>
-          <h2>
-            <FormattedMessage id="setup.errors.something_went_wrong" />
-          </h2>
-          <p>
-            <FormattedMessage
-              id="setup.errors.something_went_wrong_while_setting_up_your_system"
-              values={{ error: <pre>{setupError}</pre> }}
-            />
-          </p>
-          <p>
-            <FormattedMessage
-              id="setup.errors.something_went_wrong_description"
-              values={{ githubLink, discordLink }}
-            />
-          </p>
-        </section>
-        <section className="mt-5">
-          <div className="d-flex justify-content-center">
-            <Button variant="secondary mx-2 p-5" onClick={() => goBack(2)}>
-              <FormattedMessage id="actions.previous_action" />
-            </Button>
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function renderSuccess() {
-    return (
-      <>
-        <section>
-          <h2>
-            <FormattedMessage id="setup.success.your_system_has_been_created" />
-          </h2>
-          <p>
-            <FormattedMessage id="setup.success.next_config_step_one" />
-          </p>
-          <p>
-            <FormattedMessage
-              id="setup.success.next_config_step_two"
-              values={{
-                code: (chunks: string) => <code>{chunks}</code>,
-                localized_task: intl.formatMessage({
-                  id: "config.categories.tasks",
-                }),
-                localized_scan: intl.formatMessage({ id: "actions.scan" }),
-              }}
-            />
-          </p>
-        </section>
-        <section>
-          <h3>
-            <FormattedMessage id="setup.success.getting_help" />
-          </h3>
-          <p>
-            <FormattedMessage
-              id="setup.success.in_app_manual_explained"
-              values={{ icon: <Icon icon={faQuestionCircle} /> }}
-            />
-          </p>
-          <p>
-            <FormattedMessage
-              id="setup.success.help_links"
-              values={{ discordLink, githubLink }}
-            />
-          </p>
-        </section>
-        <section>
-          <h3>
-            <FormattedMessage id="setup.success.support_us" />
-          </h3>
-          <p>
-            <FormattedMessage
-              id="setup.success.open_collective"
-              values={{
-                open_collective_link: (
-                  <a
-                    href="https://opencollective.com/stashapp"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {" "}
-                    OpenCollective{" "}
-                  </a>
-                ),
-              }}
-            />
-          </p>
-          <p>
-            <FormattedMessage id="setup.success.welcome_contrib" />
-          </p>
-        </section>
-        <section>
-          <p className="lead text-center">
-            <FormattedMessage id="setup.success.thanks_for_trying_stash" />
-          </p>
-        </section>
-        <section className="mt-5">
-          <div className="d-flex justify-content-center">
-            <Link to="/settings?tab=library">
-              <Button variant="success mx-2 p-5" onClick={() => goBack(2)}>
-                <FormattedMessage id="actions.finish" />
-              </Button>
-            </Link>
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function renderFinish() {
-    if (setupError) {
-      return renderError();
-    }
-
-    return renderSuccess();
-  }
-
-  // only display setup wizard if system is not setup
-  if (statusLoading || configLoading) {
-    return <LoadingIndicator />;
-  }
-
-  if (
-    systemStatus &&
-    systemStatus.systemStatus.status !== GQL.SystemStatusEnum.Setup
-  ) {
-    // redirect to main page
-    const newURL = new URL("/", window.location.toString());
-    window.location.href = newURL.toString();
-    return <LoadingIndicator />;
-  }
-
-  const welcomeStep =
-    systemStatus && systemStatus.systemStatus.configPath !== ""
-      ? renderWelcomeSpecificConfig
-      : renderWelcome;
-  const steps = [welcomeStep, renderSetPaths, renderConfirm, renderFinish];
-
-  function renderCreating() {
-    return (
-      <Card>
-        <LoadingIndicator
-          message={intl.formatMessage({
-            id: "setup.creating.creating_your_system",
-          })}
-        />
+  return (
+    <>
+      <section>
+        <h2 className="mb-5">
+          <FormattedMessage id="setup.welcome_to_stash" />
+        </h2>
+        <p className="lead text-center">
+          <FormattedMessage id="setup.welcome.unable_to_locate_config" />
+        </p>
+        <p>
+          <FormattedMessage
+            id="setup.welcome.config_path_logic_explained"
+            values={{
+              code: (chunks: string) => <code>{chunks}</code>,
+              fallback_path: fallbackConfigPath,
+            }}
+          />
+        </p>
         <Alert variant="info text-center">
           <FormattedMessage
-            id="setup.creating.ffmpeg_notice"
+            id="setup.welcome.unexpected_explained"
             values={{
               code: (chunks: string) => <code>{chunks}</code>,
             }}
           />
         </Alert>
-      </Card>
+        <p>
+          <FormattedMessage id="setup.welcome.next_step" />
+        </p>
+      </section>
+
+      <section className="mt-5">
+        <h3 className="text-center mb-5">
+          <FormattedMessage id="setup.welcome.store_stash_config" />
+        </h3>
+
+        <div className="d-flex justify-content-center">
+          <Button
+            variant="secondary mx-2 p-5"
+            onClick={() => onConfigLocationChosen(false)}
+          >
+            <FormattedMessage
+              id="setup.welcome.in_current_stash_directory"
+              values={{
+                code: (chunks: string) => <code>{chunks}</code>,
+                path: fallbackStashDir,
+              }}
+            />
+            <br />
+            <code>{homeDirPath}</code>
+          </Button>
+          <Button
+            variant="secondary mx-2 p-5"
+            onClick={() => onConfigLocationChosen(true)}
+            disabled={macApp}
+          >
+            {macApp ? (
+              <>
+                <FormattedMessage
+                  id="setup.welcome.in_the_current_working_directory_disabled"
+                  values={{
+                    code: (chunks: string) => <code>{chunks}</code>,
+                    path: pwd,
+                  }}
+                />
+                <br />
+                <b>
+                  <FormattedMessage
+                    id="setup.welcome.in_the_current_working_directory_disabled_macos"
+                    values={{
+                      code: (chunks: string) => <code>{chunks}</code>,
+                      br: () => <br />,
+                    }}
+                  />
+                </b>
+              </>
+            ) : (
+              <>
+                <FormattedMessage
+                  id="setup.welcome.in_the_current_working_directory"
+                  values={{
+                    code: (chunks: string) => <code>{chunks}</code>,
+                    path: pwd,
+                  }}
+                />
+                <br />
+                <code>{workingDir}</code>
+              </>
+            )}
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+const WelcomeStep: React.FC<IWizardStep> = (props) => {
+  const { systemStatus } = useSetupContext();
+  const status = systemStatus?.systemStatus;
+  const overrideConfig = status?.configPath;
+
+  return overrideConfig ? (
+    <WelcomeSpecificConfig {...props} />
+  ) : (
+    <DefaultWelcomeStep {...props} />
+  );
+};
+
+const StashAlert: React.FC<{ close: (confirm: boolean) => void }> = ({
+  close,
+}) => {
+  const intl = useIntl();
+
+  return (
+    <ModalComponent
+      show
+      icon={faExclamationTriangle}
+      accept={{
+        text: intl.formatMessage({ id: "actions.confirm" }),
+        variant: "danger",
+        onClick: () => close(true),
+      }}
+      cancel={{ onClick: () => close(false) }}
+    >
+      <p>
+        <FormattedMessage id="setup.paths.stash_alert" />
+      </p>
+    </ModalComponent>
+  );
+};
+
+const DatabaseSection: React.FC<{
+  databaseFile: string;
+  setDatabaseFile: React.Dispatch<React.SetStateAction<string>>;
+}> = ({ databaseFile, setDatabaseFile }) => {
+  const intl = useIntl();
+
+  return (
+    <Form.Group id="database">
+      <h3>
+        <FormattedMessage id="setup.paths.where_can_stash_store_its_database" />
+      </h3>
+      <p>
+        <FormattedMessage
+          id="setup.paths.where_can_stash_store_its_database_description"
+          values={{
+            code: (chunks: string) => <code>{chunks}</code>,
+          }}
+        />
+        <br />
+        <FormattedMessage
+          id="setup.paths.where_can_stash_store_its_database_warning"
+          values={{
+            strong: (chunks: string) => <strong>{chunks}</strong>,
+          }}
+        />
+      </p>
+      <Form.Control
+        className="text-input"
+        defaultValue={databaseFile}
+        placeholder={intl.formatMessage({
+          id: "setup.paths.database_filename_empty_for_default",
+        })}
+        onChange={(e) => setDatabaseFile(e.currentTarget.value)}
+      />
+    </Form.Group>
+  );
+};
+
+const DirectorySelector: React.FC<{
+  value: string;
+  setValue: React.Dispatch<React.SetStateAction<string>>;
+  placeholder: string;
+  disabled?: boolean;
+}> = ({ value, setValue, placeholder, disabled = false }) => {
+  const [showSelectDialog, setShowSelectDialog] = useState(false);
+
+  function onSelectClosed(dir?: string) {
+    if (dir) {
+      setValue(dir);
+    }
+    setShowSelectDialog(false);
+  }
+
+  return (
+    <>
+      {showSelectDialog ? (
+        <FolderSelectDialog onClose={onSelectClosed} />
+      ) : null}
+      <InputGroup>
+        <Form.Control
+          className="text-input"
+          value={disabled ? "" : value}
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.currentTarget.value)}
+          disabled={disabled}
+        />
+        <InputGroup.Append>
+          <Button
+            variant="secondary"
+            className="text-input"
+            onClick={() => setShowSelectDialog(true)}
+            disabled={disabled}
+          >
+            <Icon icon={faEllipsisH} />
+          </Button>
+        </InputGroup.Append>
+      </InputGroup>
+    </>
+  );
+};
+
+const GeneratedSection: React.FC<{
+  generatedLocation: string;
+  setGeneratedLocation: React.Dispatch<React.SetStateAction<string>>;
+}> = ({ generatedLocation, setGeneratedLocation }) => {
+  const intl = useIntl();
+
+  return (
+    <Form.Group id="generated">
+      <h3>
+        <FormattedMessage id="setup.paths.where_can_stash_store_its_generated_content" />
+      </h3>
+      <p>
+        <FormattedMessage
+          id="setup.paths.where_can_stash_store_its_generated_content_description"
+          values={{
+            code: (chunks: string) => <code>{chunks}</code>,
+          }}
+        />
+      </p>
+      <DirectorySelector
+        value={generatedLocation}
+        setValue={setGeneratedLocation}
+        placeholder={intl.formatMessage({
+          id: "setup.paths.path_to_generated_directory_empty_for_default",
+        })}
+      />
+    </Form.Group>
+  );
+};
+
+const CacheSection: React.FC<{
+  cacheLocation: string;
+  setCacheLocation: React.Dispatch<React.SetStateAction<string>>;
+}> = ({ cacheLocation, setCacheLocation }) => {
+  const intl = useIntl();
+
+  return (
+    <Form.Group id="cache">
+      <h3>
+        <FormattedMessage id="setup.paths.where_can_stash_store_cache_files" />
+      </h3>
+      <p>
+        <FormattedMessage
+          id="setup.paths.where_can_stash_store_cache_files_description"
+          values={{
+            code: (chunks: string) => <code>{chunks}</code>,
+          }}
+        />
+      </p>
+      <DirectorySelector
+        value={cacheLocation}
+        setValue={setCacheLocation}
+        placeholder={intl.formatMessage({
+          id: "setup.paths.path_to_cache_directory_empty_for_default",
+        })}
+      />
+    </Form.Group>
+  );
+};
+
+const BlobsSection: React.FC<{
+  blobsLocation: string;
+  setBlobsLocation: React.Dispatch<React.SetStateAction<string>>;
+  storeBlobsInDatabase: boolean;
+  setStoreBlobsInDatabase: React.Dispatch<React.SetStateAction<boolean>>;
+}> = ({
+  blobsLocation,
+  setBlobsLocation,
+  storeBlobsInDatabase,
+  setStoreBlobsInDatabase,
+}) => {
+  const intl = useIntl();
+
+  return (
+    <Form.Group id="blobs">
+      <h3>
+        <FormattedMessage id="setup.paths.where_can_stash_store_blobs" />
+      </h3>
+      <p>
+        <FormattedMessage
+          id="setup.paths.where_can_stash_store_blobs_description"
+          values={{
+            code: (chunks: string) => <code>{chunks}</code>,
+          }}
+        />
+      </p>
+      <p>
+        <FormattedMessage
+          id="setup.paths.where_can_stash_store_blobs_description_addendum"
+          values={{
+            code: (chunks: string) => <code>{chunks}</code>,
+            strong: (chunks: string) => <strong>{chunks}</strong>,
+          }}
+        />
+      </p>
+
+      <div>
+        <Form.Check
+          id="store-blobs-in-database"
+          checked={storeBlobsInDatabase}
+          label={intl.formatMessage({
+            id: "setup.paths.store_blobs_in_database",
+          })}
+          onChange={() => setStoreBlobsInDatabase(!storeBlobsInDatabase)}
+        />
+      </div>
+
+      <div>
+        <DirectorySelector
+          value={blobsLocation}
+          setValue={setBlobsLocation}
+          placeholder={intl.formatMessage({
+            id: "setup.paths.path_to_blobs_directory_empty_for_default",
+          })}
+          disabled={storeBlobsInDatabase}
+        />
+      </div>
+    </Form.Group>
+  );
+};
+
+const SetPathsStep: React.FC<IWizardStep> = ({ goBack, next }) => {
+  const { configuration, setupState } = useSetupContext();
+
+  const [showStashAlert, setShowStashAlert] = useState(false);
+
+  const [stashes, setStashes] = useState<GQL.StashConfig[]>(
+    setupState.stashes ?? []
+  );
+  const [sfwContentMode, setSfwContentMode] = useState(
+    setupState.sfwContentMode ?? false
+  );
+
+  const [databaseFile, setDatabaseFile] = useState(
+    setupState.databaseFile ?? ""
+  );
+  const [generatedLocation, setGeneratedLocation] = useState(
+    setupState.generatedLocation ?? ""
+  );
+  const [cacheLocation, setCacheLocation] = useState(
+    setupState.cacheLocation ?? ""
+  );
+  const [storeBlobsInDatabase, setStoreBlobsInDatabase] = useState(
+    setupState.storeBlobsInDatabase ?? false
+  );
+  const [blobsLocation, setBlobsLocation] = useState(
+    setupState.blobsLocation ?? ""
+  );
+
+  const overrideDatabase = configuration?.general.databasePath;
+  const overrideGenerated = configuration?.general.generatedPath;
+  const overrideCache = configuration?.general.cachePath;
+  const overrideBlobs = configuration?.general.blobsPath;
+
+  function preNext() {
+    if (stashes.length === 0) {
+      setShowStashAlert(true);
+    } else {
+      onNext();
+    }
+  }
+
+  function onNext() {
+    const input: Partial<GQL.SetupInput> = {
+      stashes,
+      databaseFile,
+      generatedLocation,
+      cacheLocation,
+      blobsLocation: storeBlobsInDatabase ? "" : blobsLocation,
+      storeBlobsInDatabase,
+      sfwContentMode,
+    };
+    next(input);
+  }
+
+  return (
+    <>
+      {showStashAlert ? (
+        <StashAlert
+          close={(confirm) => {
+            setShowStashAlert(false);
+            if (confirm) {
+              onNext();
+            }
+          }}
+        />
+      ) : null}
+      <section>
+        <h2 className="mb-3">
+          <FormattedMessage id="setup.paths.set_up_your_paths" />
+        </h2>
+        <p>
+          <FormattedMessage id="setup.paths.description" />
+        </p>
+      </section>
+      <section>
+        <Form.Group id="stashes">
+          <h3>
+            <FormattedMessage id="setup.paths.where_is_your_porn_located" />
+          </h3>
+          <p>
+            <FormattedMessage id="setup.paths.where_is_your_porn_located_description" />
+          </p>
+          <Card>
+            <StashConfiguration
+              stashes={stashes}
+              setStashes={(s) => setStashes(s)}
+            />
+          </Card>
+        </Form.Group>
+        <Form.Group id="sfw_content">
+          <h3>
+            <FormattedMessage id="setup.paths.sfw_content_settings" />
+          </h3>
+          <p>
+            <FormattedMessage id="setup.paths.sfw_content_settings_description" />
+          </p>
+          <Card>
+            <Form.Check
+              id="use-sfw-content-mode"
+              checked={sfwContentMode}
+              label={<FormattedMessage id="setup.paths.use_sfw_content_mode" />}
+              onChange={() => setSfwContentMode(!sfwContentMode)}
+            />
+          </Card>
+        </Form.Group>
+        {overrideDatabase ? null : (
+          <DatabaseSection
+            databaseFile={databaseFile}
+            setDatabaseFile={setDatabaseFile}
+          />
+        )}
+        {overrideGenerated ? null : (
+          <GeneratedSection
+            generatedLocation={generatedLocation}
+            setGeneratedLocation={setGeneratedLocation}
+          />
+        )}
+        {overrideCache ? null : (
+          <CacheSection
+            cacheLocation={cacheLocation}
+            setCacheLocation={setCacheLocation}
+          />
+        )}
+        {overrideBlobs ? null : (
+          <BlobsSection
+            blobsLocation={blobsLocation}
+            setBlobsLocation={setBlobsLocation}
+            storeBlobsInDatabase={storeBlobsInDatabase}
+            setStoreBlobsInDatabase={setStoreBlobsInDatabase}
+          />
+        )}
+      </section>
+      <section className="mt-5">
+        <div className="d-flex justify-content-center">
+          <Button variant="secondary mx-2 p-5" onClick={() => goBack()}>
+            <FormattedMessage id="actions.previous_action" />
+          </Button>
+          <Button variant="primary mx-2 p-5" onClick={() => preNext()}>
+            <FormattedMessage id="actions.next_action" />
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+const StashExclusions: React.FC<{ stash: GQL.StashConfig }> = ({ stash }) => {
+  if (!stash.excludeImage && !stash.excludeVideo) {
+    return null;
+  }
+
+  const excludes = [];
+  if (stash.excludeVideo) {
+    excludes.push("videos");
+  }
+  if (stash.excludeImage) {
+    excludes.push("images");
+  }
+
+  return <span>{`(excludes ${excludes.join(" and ")})`}</span>;
+};
+
+const ConfirmStep: React.FC<IWizardStep> = ({ goBack, next }) => {
+  const {
+    configuration,
+    pathDir,
+    pathJoin,
+    setupState,
+    homeDirPath,
+    workingDir,
+  } = useSetupContext();
+
+  // if unset, means use homeDirPath
+  const cfgFile = setupState.configLocation
+    ? pathJoin(workingDir, setupState.configLocation)
+    : pathJoin(homeDirPath, "config.yml");
+  const cfgDir = pathDir(cfgFile);
+  const stashes = setupState.stashes ?? [];
+  const {
+    databaseFile,
+    generatedLocation,
+    cacheLocation,
+    blobsLocation,
+    storeBlobsInDatabase,
+  } = setupState;
+
+  const overrideDatabase = configuration?.general.databasePath;
+  const overrideGenerated = configuration?.general.generatedPath;
+  const overrideCache = configuration?.general.cachePath;
+  const overrideBlobs = configuration?.general.blobsPath;
+
+  function joinCfgDir(path: string) {
+    if (cfgDir) {
+      return pathJoin(cfgDir, path);
+    } else {
+      return path;
+    }
+  }
+
+  return (
+    <>
+      <section>
+        <h2 className="mb-3">
+          <FormattedMessage id="setup.confirm.nearly_there" />
+        </h2>
+        <p>
+          <FormattedMessage id="setup.confirm.almost_ready" />
+        </p>
+        <dl>
+          <dt>
+            <FormattedMessage id="setup.confirm.configuration_file_location" />
+          </dt>
+          <dd>
+            <code>{cfgFile}</code>
+          </dd>
+        </dl>
+        <dl>
+          <dt>
+            <FormattedMessage id="setup.confirm.stash_library_directories" />
+          </dt>
+          <dd>
+            <ul>
+              {stashes.map((s) => (
+                <li key={s.path}>
+                  <code>{s.path} </code>
+                  <StashExclusions stash={s} />
+                </li>
+              ))}
+            </ul>
+          </dd>
+        </dl>
+        {!overrideDatabase && (
+          <dl>
+            <dt>
+              <FormattedMessage id="setup.confirm.database_file_path" />
+            </dt>
+            <dd>
+              <code>{databaseFile || joinCfgDir("stash-go.sqlite")}</code>
+            </dd>
+          </dl>
+        )}
+        {!overrideGenerated && (
+          <dl>
+            <dt>
+              <FormattedMessage id="setup.confirm.generated_directory" />
+            </dt>
+            <dd>
+              <code>{generatedLocation || joinCfgDir("generated")}</code>
+            </dd>
+          </dl>
+        )}
+        {!overrideCache && (
+          <dl>
+            <dt>
+              <FormattedMessage id="setup.confirm.cache_directory" />
+            </dt>
+            <dd>
+              <code>{cacheLocation || joinCfgDir("cache")}</code>
+            </dd>
+          </dl>
+        )}
+        {!overrideBlobs && (
+          <dl>
+            <dt>
+              <FormattedMessage id="setup.confirm.blobs_directory" />
+            </dt>
+            <dd>
+              <code>
+                {storeBlobsInDatabase ? (
+                  <FormattedMessage id="setup.confirm.blobs_use_database" />
+                ) : (
+                  blobsLocation || joinCfgDir("blobs")
+                )}
+              </code>
+            </dd>
+          </dl>
+        )}
+      </section>
+      <section className="mt-5">
+        <div className="d-flex justify-content-center">
+          <Button variant="secondary mx-2 p-5" onClick={() => goBack()}>
+            <FormattedMessage id="actions.previous_action" />
+          </Button>
+          <Button variant="success mx-2 p-5" onClick={() => next()}>
+            <FormattedMessage id="actions.confirm" />
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+const DiscordLink = (
+  <ExternalLink href="https://discord.gg/2TsNFKt">Discord</ExternalLink>
+);
+const GithubLink = (
+  <ExternalLink href="https://github.com/stashapp/stash/issues">
+    <FormattedMessage id="setup.github_repository" />
+  </ExternalLink>
+);
+
+const ErrorStep: React.FC<{ error: string; goBack: () => void }> = ({
+  error,
+  goBack,
+}) => {
+  return (
+    <>
+      <section>
+        <h2>
+          <FormattedMessage id="setup.errors.something_went_wrong" />
+        </h2>
+        <p>
+          <FormattedMessage
+            id="setup.errors.something_went_wrong_while_setting_up_your_system"
+            values={{ error: <pre>{error}</pre> }}
+          />
+        </p>
+        <p>
+          <FormattedMessage
+            id="setup.errors.something_went_wrong_description"
+            values={{ githubLink: GithubLink, discordLink: DiscordLink }}
+          />
+        </p>
+      </section>
+      <section className="mt-5">
+        <div className="d-flex justify-content-center">
+          <Button variant="secondary mx-2 p-5" onClick={goBack}>
+            <FormattedMessage id="actions.previous_action" />
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+const SuccessStep: React.FC<{}> = () => {
+  const intl = useIntl();
+  const history = useHistory();
+
+  const [mutateDownloadFFMpeg] = GQL.useDownloadFfMpegMutation();
+
+  const [downloadFFmpeg, setDownloadFFmpeg] = useState(true);
+
+  const { systemStatus } = useSetupContext();
+  const status = systemStatus?.systemStatus;
+
+  function onFinishClick() {
+    if ((!status?.ffmpegPath || !status?.ffprobePath) && downloadFFmpeg) {
+      mutateDownloadFFMpeg();
+    }
+
+    history.push("/settings?tab=library");
+  }
+
+  return (
+    <>
+      <section>
+        <h2>
+          <FormattedMessage id="setup.success.your_system_has_been_created" />
+        </h2>
+        <p>
+          <FormattedMessage id="setup.success.next_config_step_one" />
+        </p>
+        <p>
+          <FormattedMessage
+            id="setup.success.next_config_step_two"
+            values={{
+              code: (chunks: string) => <code>{chunks}</code>,
+              localized_task: intl.formatMessage({
+                id: "config.categories.tasks",
+              }),
+              localized_scan: intl.formatMessage({ id: "actions.scan" }),
+            }}
+          />
+        </p>
+        {!status?.ffmpegPath || !status?.ffprobePath ? (
+          <>
+            <Alert variant="warning text-center">
+              <FormattedMessage
+                id="setup.success.missing_ffmpeg"
+                values={{
+                  code: (chunks: string) => <code>{chunks}</code>,
+                }}
+              />
+            </Alert>
+            <p>
+              <Form.Check
+                id="download-ffmpeg"
+                checked={downloadFFmpeg}
+                label={intl.formatMessage({
+                  id: "setup.success.download_ffmpeg",
+                })}
+                onChange={() => setDownloadFFmpeg(!downloadFFmpeg)}
+              />
+            </p>
+          </>
+        ) : null}
+      </section>
+      <section>
+        <h3>
+          <FormattedMessage id="setup.success.getting_help" />
+        </h3>
+        <p>
+          <FormattedMessage
+            id="setup.success.in_app_manual_explained"
+            values={{ icon: <Icon icon={faQuestionCircle} /> }}
+          />
+        </p>
+        <p>
+          <FormattedMessage
+            id="setup.success.help_links"
+            values={{ discordLink: DiscordLink, githubLink: GithubLink }}
+          />
+        </p>
+      </section>
+      <section>
+        <h3>
+          <FormattedMessage id="setup.success.support_us" />
+        </h3>
+        <p>
+          <FormattedMessage
+            id="setup.success.open_collective"
+            values={{
+              open_collective_link: (
+                <ExternalLink href="https://opencollective.com/stashapp">
+                  Open Collective
+                </ExternalLink>
+              ),
+            }}
+          />
+        </p>
+        <p>
+          <FormattedMessage id="setup.success.welcome_contrib" />
+        </p>
+      </section>
+      <section>
+        <p className="lead text-center">
+          <FormattedMessage id="setup.success.thanks_for_trying_stash" />
+        </p>
+      </section>
+      <section className="mt-5">
+        <div className="d-flex justify-content-center">
+          <Button variant="success mx-2 p-5" onClick={() => onFinishClick()}>
+            <FormattedMessage id="actions.finish" />
+          </Button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+const FinishStep: React.FC<IWizardStep> = ({ goBack }) => {
+  const { setupError } = useSetupContext();
+
+  if (setupError !== undefined) {
+    return <ErrorStep error={setupError} goBack={goBack} />;
+  }
+
+  return <SuccessStep />;
+};
+
+export const Setup: React.FC = () => {
+  const intl = useIntl();
+  const { configuration } = useConfigurationContext();
+
+  const [saveUI] = useConfigureUI();
+
+  const {
+    data: systemStatus,
+    loading: statusLoading,
+    error: statusError,
+  } = useSystemStatus();
+
+  const [step, setStep] = useState(0);
+  const [setupInput, setSetupInput] = useState<Partial<GQL.SetupInput>>({});
+  const [creating, setCreating] = useState(false);
+  const [setupError, setSetupError] = useState<string | undefined>(undefined);
+
+  const history = useHistory();
+
+  const steps: React.FC<IWizardStep>[] = [
+    WelcomeStep,
+    SetPathsStep,
+    ConfirmStep,
+    FinishStep,
+  ];
+  const Step = steps[step];
+
+  async function createSystem() {
+    try {
+      setCreating(true);
+      setSetupError(undefined);
+      await mutateSetup(setupInput as GQL.SetupInput);
+      // Set lastNoteSeen to hide release notes dialog
+      await saveUI({
+        variables: {
+          input: {
+            ...configuration?.ui,
+            lastNoteSeen: releaseNotes[0].date,
+          },
+        },
+      });
+    } catch (e) {
+      if (e instanceof Error && e.message) {
+        setSetupError(e.message);
+      } else {
+        setSetupError(String(e));
+      }
+    } finally {
+      setCreating(false);
+      setStep(step + 1);
+    }
+  }
+
+  function next(input?: Partial<GQL.SetupInput>) {
+    setSetupInput({ ...setupInput, ...input });
+
+    if (Step === ConfirmStep) {
+      // create the system
+      createSystem();
+    } else {
+      setStep(step + 1);
+    }
+  }
+
+  function goBack() {
+    if (Step === FinishStep) {
+      // go back to the step before ConfirmStep
+      setStep(step - 2);
+    } else {
+      setStep(step - 1);
+    }
+  }
+
+  if (statusLoading) {
+    return <LoadingIndicator />;
+  }
+
+  if (
+    step === 0 &&
+    systemStatus &&
+    systemStatus.systemStatus.status !== GQL.SystemStatusEnum.Setup
+  ) {
+    // redirect to main page
+    history.push("/");
+    return <LoadingIndicator />;
+  }
+
+  if (statusError) {
+    return (
+      <Container>
+        <Alert variant="danger">
+          <FormattedMessage
+            id="setup.errors.unable_to_retrieve_system_status"
+            values={{ error: statusError.message }}
+          />
+        </Alert>
+      </Container>
+    );
+  }
+
+  if (!configuration || !systemStatus) {
+    return (
+      <Container>
+        <Alert variant="danger">
+          <FormattedMessage
+            id="setup.errors.unable_to_retrieve_configuration"
+            values={{ error: "configuration or systemStatus === undefined" }}
+          />
+        </Alert>
+      </Container>
     );
   }
 
   return (
-    <Container>
-      {maybeRenderGeneratedSelectDialog()}
-      <h1 className="text-center">
-        <FormattedMessage id="setup.stash_setup_wizard" />
-      </h1>
-      {loading ? renderCreating() : <Card>{steps[step]()}</Card>}
-    </Container>
+    <SetupContext
+      setupState={setupInput}
+      setupError={setupError}
+      configuration={configuration}
+      systemStatus={systemStatus}
+    >
+      <Container className="setup-wizard">
+        <h1 className="text-center">
+          <FormattedMessage id="setup.stash_setup_wizard" />
+        </h1>
+        <Card>
+          {creating ? (
+            <LoadingIndicator
+              message={intl.formatMessage({
+                id: "setup.creating.creating_your_system",
+              })}
+            />
+          ) : (
+            <Step next={next} goBack={goBack} />
+          )}
+        </Card>
+      </Container>
+    </SetupContext>
   );
 };
 

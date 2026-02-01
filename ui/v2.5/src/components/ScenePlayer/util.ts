@@ -1,6 +1,7 @@
-import VideoJS from "video.js";
+import videojs from "video.js";
 
 export const VIDEO_PLAYER_ID = "VideoJsPlayer";
 
-export const getPlayerPosition = () =>
-  VideoJS.getPlayer(VIDEO_PLAYER_ID).currentTime();
+export const getPlayer = () => videojs.getPlayer(VIDEO_PLAYER_ID);
+
+export const getPlayerPosition = () => getPlayer()?.currentTime();

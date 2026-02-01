@@ -1,20 +1,22 @@
 type Image {
   id: ID!
-  checksum: String @deprecated(reason: "Use files.fingerprints")
   title: String
-  rating: Int
+  code: String
+  # rating expressed as 1-100
+  rating100: Int
+  url: String @deprecated(reason: "Use urls")
+  urls: [String!]!
+  date: String
+  details: String
+  photographer: String
   o_counter: Int
   organized: Boolean!
-  path: String! @deprecated(reason: "Use files.path")
   created_at: Time!
   updated_at: Time!
-  
-  file_mod_time: Time @deprecated(reason: "Use files.mod_time")
 
-  file: ImageFileType! @deprecated(reason: "Use files.mod_time")
-  files: [ImageFile!]!
+  files: [ImageFile!]! @deprecated(reason: "Use visual_files")
+  visual_files: [VisualFile!]!
   paths: ImagePathsType! # Resolver
-
   galleries: [Gallery!]!
   studio: Studio
   tags: [Tag!]!
@@ -30,6 +32,7 @@ type ImageFileType {
 
 type ImagePathsType {
   thumbnail: String # Resolver
+  preview: String # Resolver
   image: String # Resolver
 }
 
@@ -37,9 +40,16 @@ input ImageUpdateInput {
   clientMutationId: String
   id: ID!
   title: String
-  rating: Int
+  code: String
+  # rating expressed as 1-100
+  rating100: Int
   organized: Boolean
-  
+  url: String @deprecated(reason: "Use urls")
+  urls: [String!]
+  date: String
+  details: String
+  photographer: String
+
   studio_id: ID
   performer_ids: [ID!]
   tag_ids: [ID!]
@@ -52,9 +62,16 @@ input BulkImageUpdateInput {
   clientMutationId: String
   ids: [ID!]
   title: String
-  rating: Int
+  code: String
+  # rating expressed as 1-100
+  rating100: Int
   organized: Boolean
-  
+  url: String @deprecated(reason: "Use urls")
+  urls: BulkUpdateStrings
+  date: String
+  details: String
+  photographer: String
+
   studio_id: ID
   performer_ids: BulkUpdateIds
   tag_ids: BulkUpdateIds
@@ -65,19 +82,23 @@ input ImageDestroyInput {
   id: ID!
   delete_file: Boolean
   delete_generated: Boolean
+  "If true, delete the file entry from the database if the file is not assigned to any other objects"
+  destroy_file_entry: Boolean
 }
 
 input ImagesDestroyInput {
   ids: [ID!]!
   delete_file: Boolean
   delete_generated: Boolean
+  "If true, delete the file entry from the database if the file is not assigned to any other objects"
+  destroy_file_entry: Boolean
 }
 
 type FindImagesResultType {
   count: Int!
-  """Total megapixels of the images"""
+  "Total megapixels of the images"
   megapixels: Float!
-  """Total file size in bytes"""
+  "Total file size in bytes"
   filesize: Float!
   images: [Image!]!
 }

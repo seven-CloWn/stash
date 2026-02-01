@@ -2,9 +2,9 @@ import React, { useState } from "react";
 import { Form } from "react-bootstrap";
 import { useImagesDestroy } from "src/core/StashService";
 import * as GQL from "src/core/generated-graphql";
-import { Modal } from "src/components/Shared";
-import { useToast } from "src/hooks";
-import { ConfigurationContext } from "src/hooks/Config";
+import { ModalComponent } from "src/components/Shared/Modal";
+import { useToast } from "src/hooks/Toast";
+import { useConfigurationContext } from "src/hooks/Config";
 import { FormattedMessage, useIntl } from "react-intl";
 import { faTrashAlt } from "@fortawesome/free-solid-svg-icons";
 
@@ -33,7 +33,7 @@ export const DeleteImagesDialog: React.FC<IDeleteImageDialogProps> = (
     { count: props.selected.length, singularEntity, pluralEntity }
   );
 
-  const { configuration: config } = React.useContext(ConfigurationContext);
+  const { configuration: config } = useConfigurationContext();
 
   const [deleteFile, setDeleteFile] = useState<boolean>(
     config?.defaults.deleteFile ?? false
@@ -60,7 +60,7 @@ export const DeleteImagesDialog: React.FC<IDeleteImageDialogProps> = (
     setIsDeleting(true);
     try {
       await deleteImage();
-      Toast.success({ content: toastMessage });
+      Toast.success(toastMessage);
     } catch (e) {
       Toast.error(e);
     }
@@ -76,9 +76,14 @@ export const DeleteImagesDialog: React.FC<IDeleteImageDialogProps> = (
     const deletedFiles: string[] = [];
 
     props.selected.forEach((s) => {
-      const paths = s.files.map((f) => f.path);
+      const paths = s.visual_files.map((f) => f.path);
       deletedFiles.push(...paths);
     });
+
+    const deleteTrashPath = config?.general.deleteTrashPath;
+    const deleteAlertId = deleteTrashPath
+      ? "dialogs.delete_alert_to_trash"
+      : "dialogs.delete_alert";
 
     return (
       <div className="delete-dialog alert alert-danger text-break">
@@ -89,7 +94,7 @@ export const DeleteImagesDialog: React.FC<IDeleteImageDialogProps> = (
               singularEntity: intl.formatMessage({ id: "file" }),
               pluralEntity: intl.formatMessage({ id: "files" }),
             }}
-            id="dialogs.delete_alert"
+            id={deleteAlertId}
           />
         </p>
         <ul>
@@ -112,7 +117,7 @@ export const DeleteImagesDialog: React.FC<IDeleteImageDialogProps> = (
   }
 
   return (
-    <Modal
+    <ModalComponent
       show
       icon={faTrashAlt}
       header={header}
@@ -146,6 +151,6 @@ export const DeleteImagesDialog: React.FC<IDeleteImageDialogProps> = (
           onChange={() => setDeleteGenerated(!deleteGenerated)}
         />
       </Form>
-    </Modal>
+    </ModalComponent>
   );
 };

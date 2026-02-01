@@ -1,5 +1,5 @@
 import { faTimes } from "@fortawesome/free-solid-svg-icons";
-import React, { useRef, useContext } from "react";
+import React, { useContext, useState } from "react";
 import {
   Badge,
   Button,
@@ -10,9 +10,107 @@ import {
 } from "react-bootstrap";
 import { FormattedMessage, useIntl } from "react-intl";
 
-import { Icon } from "src/components/Shared";
+import { Icon } from "src/components/Shared/Icon";
 import { ParseMode, TagOperation } from "../constants";
 import { TaggerStateContext } from "../context";
+import { GenderEnum } from "src/core/generated-graphql";
+import { genderList } from "src/utils/gender";
+
+const Blacklist: React.FC<{
+  list: string[];
+  setList: (blacklist: string[]) => void;
+}> = ({ list, setList }) => {
+  const intl = useIntl();
+
+  const [currentValue, setCurrentValue] = useState("");
+  const [error, setError] = useState<string>();
+
+  function addBlacklistItem() {
+    if (!currentValue) return;
+
+    // don't add duplicate items
+    if (list.includes(currentValue)) {
+      setError(
+        intl.formatMessage({
+          id: "component_tagger.config.errors.blacklist_duplicate",
+        })
+      );
+      return;
+    }
+
+    // validate regex
+    try {
+      new RegExp(currentValue);
+    } catch (e) {
+      setError((e as SyntaxError).message);
+      return;
+    }
+
+    setList([...list, currentValue]);
+
+    setCurrentValue("");
+  }
+
+  function removeBlacklistItem(index: number) {
+    const newBlacklist = [...list];
+    newBlacklist.splice(index, 1);
+    setList(newBlacklist);
+  }
+
+  return (
+    <div>
+      <h5>
+        <FormattedMessage id="component_tagger.config.blacklist_label" />
+      </h5>
+      <Form.Group>
+        <InputGroup hasValidation>
+          <Form.Control
+            className="text-input"
+            value={currentValue}
+            onChange={(e) => {
+              setCurrentValue(e.currentTarget.value);
+              setError(undefined);
+            }}
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+              if (e.key === "Enter") {
+                addBlacklistItem();
+                e.preventDefault();
+              }
+            }}
+            isInvalid={!!error}
+          />
+          <InputGroup.Append>
+            <Button onClick={() => addBlacklistItem()}>
+              <FormattedMessage id="actions.add" />
+            </Button>
+          </InputGroup.Append>
+          <Form.Control.Feedback type="invalid">{error}</Form.Control.Feedback>
+        </InputGroup>
+      </Form.Group>
+      <div>
+        {intl.formatMessage(
+          { id: "component_tagger.config.blacklist_desc" },
+          { chars_require_escape: <code>[\^$.|?*+()</code> }
+        )}
+      </div>
+      {list.map((item, index) => (
+        <Badge
+          className="tag-item d-inline-block"
+          variant="secondary"
+          key={item}
+        >
+          {item.toString()}
+          <Button
+            className="minimal ml-2"
+            onClick={() => removeBlacklistItem(index)}
+          >
+            <Icon icon={faTimes} />
+          </Button>
+        </Badge>
+      ))}
+    </div>
+  );
+};
 
 interface IConfigProps {
   show: boolean;
@@ -21,30 +119,27 @@ interface IConfigProps {
 const Config: React.FC<IConfigProps> = ({ show }) => {
   const { config, setConfig } = useContext(TaggerStateContext);
   const intl = useIntl();
-  const blacklistRef = useRef<HTMLInputElement | null>(null);
 
-  const removeBlacklist = (index: number) => {
-    setConfig({
-      ...config,
-      blacklist: [
-        ...config.blacklist.slice(0, index),
-        ...config.blacklist.slice(index + 1),
-      ],
-    });
-  };
-
-  const handleBlacklistAddition = () => {
-    if (!blacklistRef.current) return;
-
-    const input = blacklistRef.current.value;
-    if (input.length === 0) return;
-
-    setConfig({
-      ...config,
-      blacklist: [...config.blacklist, input],
-    });
-    blacklistRef.current.value = "";
-  };
+  function renderGenderCheckbox(gender: GenderEnum) {
+    const performerGenders = config.performerGenders || genderList.slice();
+    return (
+      <Form.Check
+        id={`gender-${gender}`}
+        key={gender}
+        label={<FormattedMessage id={`gender_types.${gender}`} />}
+        checked={performerGenders.includes(gender)}
+        onChange={(e) => {
+          const isChecked = e.currentTarget.checked;
+          setConfig({
+            ...config,
+            performerGenders: isChecked
+              ? [...performerGenders, gender]
+              : performerGenders.filter((g) => g !== gender),
+          });
+        }}
+      />
+    );
+  }
 
   return (
     <Collapse in={show}>
@@ -55,18 +150,16 @@ const Config: React.FC<IConfigProps> = ({ show }) => {
           </h4>
           <hr className="w-100" />
           <Form className="col-md-6">
-            <Form.Group controlId="tag-males" className="align-items-center">
-              <Form.Check
-                label={
-                  <FormattedMessage id="component_tagger.config.show_male_label" />
-                }
-                checked={config.showMales}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setConfig({ ...config, showMales: e.currentTarget.checked })
-                }
-              />
+            <Form.Group
+              controlId="performer-genders"
+              className="align-items-center"
+            >
+              <Form.Label>
+                <FormattedMessage id="component_tagger.config.performer_genders.heading" />
+              </Form.Label>
+              {genderList.map(renderGenderCheckbox)}
               <Form.Text>
-                <FormattedMessage id="component_tagger.config.show_male_desc" />
+                <FormattedMessage id="component_tagger.config.performer_genders.description" />
               </Form.Text>
             </Form.Group>
             <Form.Group controlId="set-cover" className="align-items-center">
@@ -75,7 +168,7 @@ const Config: React.FC<IConfigProps> = ({ show }) => {
                   <FormattedMessage id="component_tagger.config.set_cover_label" />
                 }
                 checked={config.setCoverImage}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                onChange={(e) =>
                   setConfig({
                     ...config,
                     setCoverImage: e.currentTarget.checked,
@@ -95,7 +188,7 @@ const Config: React.FC<IConfigProps> = ({ show }) => {
                   }
                   className="mr-4"
                   checked={config.setTags}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  onChange={(e) =>
                     setConfig({ ...config, setTags: e.currentTarget.checked })
                   }
                 />
@@ -104,7 +197,7 @@ const Config: React.FC<IConfigProps> = ({ show }) => {
                   className="col-md-2 col-3 input-control"
                   as="select"
                   value={config.tagOperation}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                  onChange={(e) =>
                     setConfig({
                       ...config,
                       tagOperation: e.currentTarget.value as TagOperation,
@@ -135,7 +228,7 @@ const Config: React.FC<IConfigProps> = ({ show }) => {
                   as="select"
                   className="col-md-2 col-3 input-control"
                   value={config.mode}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                  onChange={(e) =>
                     setConfig({
                       ...config,
                       mode: e.currentTarget.value as ParseMode,
@@ -176,40 +269,29 @@ const Config: React.FC<IConfigProps> = ({ show }) => {
                 })}
               </Form.Text>
             </Form.Group>
+            <Form.Group controlId="toggle-organized">
+              <Form.Check
+                label={
+                  <FormattedMessage id="component_tagger.config.mark_organized_label" />
+                }
+                checked={config.markSceneAsOrganizedOnSave}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    markSceneAsOrganizedOnSave: e.currentTarget.checked,
+                  })
+                }
+              />
+              <Form.Text>
+                <FormattedMessage id="component_tagger.config.mark_organized_desc" />
+              </Form.Text>
+            </Form.Group>
           </Form>
           <div className="col-md-6">
-            <h5>
-              <FormattedMessage id="component_tagger.config.blacklist_label" />
-            </h5>
-            <InputGroup>
-              <Form.Control className="text-input" ref={blacklistRef} />
-              <InputGroup.Append>
-                <Button onClick={handleBlacklistAddition}>
-                  <FormattedMessage id="actions.add" />
-                </Button>
-              </InputGroup.Append>
-            </InputGroup>
-            <div>
-              {intl.formatMessage(
-                { id: "component_tagger.config.blacklist_desc" },
-                { chars_require_escape: <code>[\^$.|?*+()</code> }
-              )}
-            </div>
-            {config.blacklist.map((item, index) => (
-              <Badge
-                className="tag-item d-inline-block"
-                variant="secondary"
-                key={item}
-              >
-                {item.toString()}
-                <Button
-                  className="minimal ml-2"
-                  onClick={() => removeBlacklist(index)}
-                >
-                  <Icon icon={faTimes} />
-                </Button>
-              </Badge>
-            ))}
+            <Blacklist
+              list={config.blacklist}
+              setList={(blacklist) => setConfig({ ...config, blacklist })}
+            />
           </div>
         </div>
       </Card>

@@ -15,20 +15,21 @@ import (
 	"strconv"
 	"time"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/stashapp/stash/pkg/file"
 	"github.com/stashapp/stash/pkg/fsutil"
 	"github.com/stashapp/stash/pkg/hash/md5"
 	"github.com/stashapp/stash/pkg/models"
-	"github.com/stashapp/stash/pkg/sliceutil/intslice"
+	"github.com/stashapp/stash/pkg/sliceutil"
 	"github.com/stashapp/stash/pkg/sqlite"
 	"github.com/stashapp/stash/pkg/txn"
-	"gopkg.in/yaml.v2"
 )
 
 const batchSize = 50000
 
 // create an example database by generating a number of scenes, markers,
-// performers, studios and tags, and associating between them all
+// performers, studios, galleries, chapters and tags, and associating between them all
 
 type config struct {
 	Database   string       `yaml:"database"`
@@ -36,6 +37,7 @@ type config struct {
 	Markers    int          `yaml:"markers"`
 	Images     int          `yaml:"images"`
 	Galleries  int          `yaml:"galleries"`
+	Chapters   int          `yaml:"chapters"`
 	Performers int          `yaml:"performers"`
 	Studios    int          `yaml:"studios"`
 	Tags       int          `yaml:"tags"`
@@ -97,6 +99,7 @@ func populateDB() {
 	makeScenes(c.Scenes)
 	makeImages(c.Images)
 	makeGalleries(c.Galleries)
+	makeChapters(c.Chapters)
 	makeMarkers(c.Markers)
 }
 
@@ -227,20 +230,16 @@ func makePerformers(n int) {
 		if err := retry(100, func() error {
 			return withTxn(func(ctx context.Context) error {
 				name := generatePerformerName()
-				performer := models.Performer{
-					Name:     sql.NullString{String: name, Valid: true},
+				performer := &models.Performer{
+					Name:     name,
 					Checksum: md5.FromString(name),
-					Favorite: sql.NullBool{
-						Bool:  false,
-						Valid: true,
-					},
 				}
 
 				// TODO - set tags
 
-				_, err := repo.Performer.Create(ctx, performer)
+				err := repo.Performer.Create(ctx, performer)
 				if err != nil {
-					err = fmt.Errorf("error creating performer with name: %s: %s", performer.Name.String, err.Error())
+					err = fmt.Errorf("error creating performer with name: %s: %s", performer.Name, err.Error())
 				}
 				return err
 			})
@@ -349,6 +348,10 @@ func getResolution() (int, int) {
 	return w, h
 }
 
+func getBool() {
+	return rand.Intn(2) == 0
+}
+
 func getDate() time.Time {
 	s := rand.Int63n(time.Now().Unix())
 
@@ -373,6 +376,7 @@ func generateImageFile(parentFolderID file.FolderID, path string) file.File {
 		BaseFile: generateBaseFile(parentFolderID, path),
 		Height:   h,
 		Width:    w,
+		Clip:     getBool(),
 	}
 }
 
@@ -444,8 +448,8 @@ func makeGalleries(n int) {
 			for ; i < batch && i < n; i++ {
 				gallery := generateGallery(i)
 				gallery.StudioID = getRandomStudioID(ctx)
-				gallery.TagIDs = getRandomTags(ctx, 0, 15)
-				gallery.PerformerIDs = getRandomPerformers(ctx)
+				gallery.TagIDs = models.NewRelatedIDs(getRandomTags(ctx, 0, 15))
+				gallery.PerformerIDs = models.NewRelatedIDs(getRandomPerformers(ctx))
 
 				path := md5.FromString("gallery/" + strconv.Itoa(i))
 				f, err := makeZipFile(ctx, path)
@@ -500,6 +504,38 @@ func generateGallery(i int) models.Gallery {
 	}
 }
 
+func makeChapters(n int) {
+	logf("creating %d chapters...", n)
+	for i := 0; i < n; {
+		// do in batches of 1000
+		batch := i + batchSize
+		if err := withTxn(func(ctx context.Context) error {
+			for ; i < batch && i < n; i++ {
+				chapter := generateChapter(i)
+				chapter.GalleryID = models.NullInt64(int64(getRandomGallery()))
+
+				created, err := repo.GalleryChapter.Create(ctx, chapter)
+				if err != nil {
+					return err
+				}
+			}
+
+			logf("... created %d chapters", i)
+
+			return nil
+		}); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func generateChapter(i int) models.GalleryChapter {
+	return models.GalleryChapter{
+		Title:      names[c.Naming.Galleries].generateName(rand.Intn(7) + 1),
+		ImageIndex: rand.Intn(200),
+	}
+}
+
 func makeMarkers(n int) {
 	logf("creating %d markers...", n)
 	for i := 0; i < n; {
@@ -518,7 +554,7 @@ func makeMarkers(n int) {
 
 				tags := getRandomTags(ctx, 0, 5)
 				// remove primary tag
-				tags = intslice.IntExclude(tags, []int{marker.PrimaryTagID})
+				tags = sliceutil.Exclude(tags, []int{marker.PrimaryTagID})
 				if err := repo.SceneMarker.UpdateTags(ctx, created.ID, tags); err != nil {
 					return err
 				}
@@ -564,10 +600,10 @@ func getRandomStudioID(ctx context.Context) *int {
 
 func makeSceneRelationships(ctx context.Context, s *models.Scene) {
 	// add tags
-	s.TagIDs = getRandomTags(ctx, 0, 15)
+	s.TagIDs = models.NewRelatedIDs(getRandomTags(ctx, 0, 15))
 
 	// add performers
-	s.PerformerIDs = getRandomPerformers(ctx)
+	s.PerformerIDs = models.NewRelatedIDs(getRandomPerformers(ctx))
 }
 
 func makeImageRelationships(ctx context.Context, i *models.Image) {
@@ -576,12 +612,12 @@ func makeImageRelationships(ctx context.Context, i *models.Image) {
 
 	// add tags
 	if rand.Intn(100) == 0 {
-		i.TagIDs = getRandomTags(ctx, 1, 15)
+		i.TagIDs = models.NewRelatedIDs(getRandomTags(ctx, 1, 15))
 	}
 
 	// add performers
 	if rand.Intn(100) <= 1 {
-		i.PerformerIDs = getRandomPerformers(ctx)
+		i.PerformerIDs = models.NewRelatedIDs(getRandomPerformers(ctx))
 	}
 }
 
@@ -606,12 +642,12 @@ func getRandomPerformers(ctx context.Context) []int {
 	// 	}
 
 	// 	for _, pp := range p {
-	// 		ret = intslice.IntAppendUnique(ret, pp.ID)
+	// 		ret = sliceutil.AppendUnique(ret, pp.ID)
 	// 	}
 	// }
 
 	for i := 0; i < n; i++ {
-		ret = intslice.IntAppendUnique(ret, rand.Intn(c.Performers)+1)
+		ret = sliceutil.AppendUnique(ret, rand.Intn(c.Performers)+1)
 	}
 
 	return ret
@@ -619,6 +655,10 @@ func getRandomPerformers(ctx context.Context) []int {
 
 func getRandomScene() int {
 	return rand.Intn(c.Scenes) + 1
+}
+
+func getRandomGallery() int {
+	return rand.Intn(c.Galleries) + 1
 }
 
 func getRandomTags(ctx context.Context, min, max int) []int {
@@ -637,12 +677,12 @@ func getRandomTags(ctx context.Context, min, max int) []int {
 	// 	}
 
 	// 	for _, tt := range t {
-	// 		ret = intslice.IntAppendUnique(ret, tt.ID)
+	// 		ret = sliceutil.AppendUnique(ret, tt.ID)
 	// 	}
 	// }
 
 	for i := 0; i < n; i++ {
-		ret = intslice.IntAppendUnique(ret, rand.Intn(c.Tags)+1)
+		ret = sliceutil.AppendUnique(ret, rand.Intn(c.Tags)+1)
 	}
 
 	return ret
@@ -659,12 +699,12 @@ func getRandomImages(ctx context.Context) []int {
 	// 	}
 
 	// 	for _, tt := range t {
-	// 		ret = intslice.IntAppendUnique(ret, tt.ID)
+	// 		ret = sliceutil.AppendUnique(ret, tt.ID)
 	// 	}
 	// }
 
 	for i := 0; i < n; i++ {
-		ret = intslice.IntAppendUnique(ret, rand.Intn(c.Images)+1)
+		ret = sliceutil.AppendUnique(ret, rand.Intn(c.Images)+1)
 	}
 
 	return ret

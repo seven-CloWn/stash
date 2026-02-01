@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Button, Form, Col, Row, Badge, Dropdown } from "react-bootstrap";
+import { Button, Form, Dropdown, SplitButton } from "react-bootstrap";
 import { FormattedMessage, useIntl } from "react-intl";
 import Mousetrap from "mousetrap";
 import * as GQL from "src/core/generated-graphql";
@@ -8,40 +8,48 @@ import {
   useListPerformerScrapers,
   queryScrapePerformer,
   mutateReloadScrapers,
-  usePerformerUpdate,
-  usePerformerCreate,
-  useTagCreate,
   queryScrapePerformerURL,
 } from "src/core/StashService";
-import {
-  Icon,
-  ImageInput,
-  LoadingIndicator,
-  CollapseButton,
-  TagSelect,
-  URLField,
-  CountrySelect,
-} from "src/components/Shared";
-import { ImageUtils, getStashIDs } from "src/utils";
-import { useToast } from "src/hooks";
-import { Prompt, useHistory } from "react-router-dom";
+import { Icon } from "src/components/Shared/Icon";
+import { ImageInput } from "src/components/Shared/ImageInput";
+import { LoadingIndicator } from "src/components/Shared/LoadingIndicator";
+import { CountrySelect } from "src/components/Shared/CountrySelect";
+import ImageUtils from "src/utils/image";
+import { addUpdateStashID, getStashIDs } from "src/utils/stashIds";
+import { stashboxDisplayName } from "src/utils/stashbox";
+import { useToast } from "src/hooks/Toast";
+import { Prompt } from "react-router-dom";
 import { useFormik } from "formik";
 import {
-  genderStrings,
   genderToString,
+  stringGenderMap,
   stringToGender,
 } from "src/utils/gender";
-import { ConfigurationContext } from "src/hooks/Config";
-import { stashboxDisplayName } from "src/utils/stashbox";
+import {
+  circumcisedToString,
+  stringCircumMap,
+  stringToCircumcised,
+} from "src/utils/circumcised";
+import { useConfigurationContext } from "src/hooks/Config";
 import { PerformerScrapeDialog } from "./PerformerScrapeDialog";
 import PerformerScrapeModal from "./PerformerScrapeModal";
 import PerformerStashBoxModal, { IStashBox } from "./PerformerStashBoxModal";
+import StashBoxIDSearchModal from "src/components/Shared/StashBoxIDSearchModal";
 import cx from "classnames";
+import { faSyncAlt, faPlus } from "@fortawesome/free-solid-svg-icons";
+import isEqual from "lodash-es/isEqual";
+import { formikUtils } from "src/utils/form";
 import {
-  faPlus,
-  faSyncAlt,
-  faTrashAlt,
-} from "@fortawesome/free-solid-svg-icons";
+  yupFormikValidate,
+  yupInputNumber,
+  yupInputEnum,
+  yupDateString,
+  yupUniqueAliases,
+  yupUniqueStringList,
+} from "src/utils/yup";
+import { useTagsEdit } from "src/hooks/tagsEdit";
+import { CustomFieldsInput } from "src/components/Shared/CustomFields";
+import { cloneDeep } from "@apollo/client/utilities";
 
 const isScraper = (
   scraper: GQL.Scraper | GQL.StashBox
@@ -49,210 +57,166 @@ const isScraper = (
 
 interface IPerformerDetails {
   performer: Partial<GQL.PerformerDataFragment>;
-  isNew?: boolean;
   isVisible: boolean;
-  onImageChange?: (image?: string | null) => void;
-  onImageEncoding?: (loading?: boolean) => void;
-  onCancelEditing?: () => void;
+  onSubmit: (
+    performer: GQL.PerformerCreateInput,
+    andNew?: boolean
+  ) => Promise<void>;
+  onCancel?: () => void;
+  setImage: (image?: string | null) => void;
+  setEncodingImage: (loading: boolean) => void;
+}
+
+function customFieldInput(isNew: boolean, input: {}) {
+  if (isNew) {
+    return input;
+  } else {
+    return {
+      full: input,
+    };
+  }
 }
 
 export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
   performer,
-  isNew,
   isVisible,
-  onImageChange,
-  onImageEncoding,
-  onCancelEditing,
+  onSubmit,
+  onCancel,
+  setImage,
+  setEncodingImage,
 }) => {
   const Toast = useToast();
-  const history = useHistory();
+
+  const isNew = performer.id === undefined;
 
   // Editing state
-  const [scraper, setScraper] = useState<GQL.Scraper | IStashBox | undefined>();
-  const [newTags, setNewTags] = useState<GQL.ScrapedTag[]>();
+  const [scraper, setScraper] = useState<GQL.Scraper | IStashBox>();
   const [isScraperModalOpen, setIsScraperModalOpen] = useState<boolean>(false);
+  const [isStashIDSearchOpen, setIsStashIDSearchOpen] =
+    useState<boolean>(false);
 
   // Network state
   const [isLoading, setIsLoading] = useState(false);
 
-  const [updatePerformer] = usePerformerUpdate();
-  const [createPerformer] = usePerformerCreate();
-
   const Scrapers = useListPerformerScrapers();
   const [queryableScrapers, setQueryableScrapers] = useState<GQL.Scraper[]>([]);
 
-  const [scrapedPerformer, setScrapedPerformer] = useState<
-    GQL.ScrapedPerformer | undefined
-  >();
-  const { configuration: stashConfig } = React.useContext(ConfigurationContext);
+  const [scrapedPerformer, setScrapedPerformer] =
+    useState<GQL.ScrapedPerformer>();
+  const { configuration: stashConfig } = useConfigurationContext();
 
-  const imageEncoding = ImageUtils.usePasteImage(onImageLoad, true);
-
-  const [createTag] = useTagCreate();
   const intl = useIntl();
-
-  const genderOptions = [""].concat(genderStrings);
-
-  const labelXS = 3;
-  const labelXL = 2;
-  const fieldXS = 9;
-  const fieldXL = 7;
 
   const schema = yup.object({
     name: yup.string().required(),
-    aliases: yup.string().optional(),
-    gender: yup.string().optional().oneOf(genderOptions),
-    birthdate: yup.string().optional(),
-    ethnicity: yup.string().optional(),
-    eye_color: yup.string().optional(),
-    country: yup.string().optional(),
-    height: yup.string().optional(),
-    measurements: yup.string().optional(),
-    fake_tits: yup.string().optional(),
-    career_length: yup.string().optional(),
-    tattoos: yup.string().optional(),
-    piercings: yup.string().optional(),
-    url: yup.string().optional(),
-    twitter: yup.string().optional(),
-    instagram: yup.string().optional(),
-    tag_ids: yup.array(yup.string().required()).optional(),
-    stash_ids: yup.mixed<GQL.StashIdInput>().optional(),
-    image: yup.string().optional().nullable(),
-    details: yup.string().optional(),
-    death_date: yup.string().optional(),
-    hair_color: yup.string().optional(),
-    weight: yup.number().optional(),
-    ignore_auto_tag: yup.boolean().optional(),
+    disambiguation: yup.string().ensure(),
+    alias_list: yupUniqueAliases(intl, "name"),
+    gender: yupInputEnum(GQL.GenderEnum).nullable().defined(),
+    birthdate: yupDateString(intl),
+    death_date: yupDateString(intl),
+    country: yup.string().ensure(),
+    ethnicity: yup.string().ensure(),
+    hair_color: yup.string().ensure(),
+    eye_color: yup.string().ensure(),
+    height_cm: yupInputNumber().positive().truncate().nullable().defined(),
+    weight: yupInputNumber().positive().truncate().nullable().defined(),
+    measurements: yup.string().ensure(),
+    fake_tits: yup.string().ensure(),
+    penis_length: yupInputNumber().positive().nullable().defined(),
+    circumcised: yupInputEnum(GQL.CircumisedEnum).nullable().defined(),
+    tattoos: yup.string().ensure(),
+    piercings: yup.string().ensure(),
+    career_length: yup.string().ensure(),
+    urls: yupUniqueStringList(intl),
+    details: yup.string().ensure(),
+    tag_ids: yup.array(yup.string().required()).defined(),
+    ignore_auto_tag: yup.boolean().defined(),
+    stash_ids: yup.mixed<GQL.StashIdInput[]>().defined(),
+    image: yup.string().nullable().optional(),
+    custom_fields: yup.object().required().defined(),
   });
 
   const initialValues = {
     name: performer.name ?? "",
-    aliases: performer.aliases ?? "",
-    gender: genderToString(performer.gender ?? undefined),
+    disambiguation: performer.disambiguation ?? "",
+    alias_list: performer.alias_list ?? [],
+    gender: performer.gender ?? null,
     birthdate: performer.birthdate ?? "",
-    ethnicity: performer.ethnicity ?? "",
-    eye_color: performer.eye_color ?? "",
+    death_date: performer.death_date ?? "",
     country: performer.country ?? "",
-    height: performer.height ?? "",
+    ethnicity: performer.ethnicity ?? "",
+    hair_color: performer.hair_color ?? "",
+    eye_color: performer.eye_color ?? "",
+    height_cm: performer.height_cm ?? null,
+    weight: performer.weight ?? null,
     measurements: performer.measurements ?? "",
     fake_tits: performer.fake_tits ?? "",
-    career_length: performer.career_length ?? "",
+    penis_length: performer.penis_length ?? null,
+    circumcised: performer.circumcised ?? null,
     tattoos: performer.tattoos ?? "",
     piercings: performer.piercings ?? "",
-    url: performer.url ?? "",
-    twitter: performer.twitter ?? "",
-    instagram: performer.instagram ?? "",
-    tag_ids: (performer.tags ?? []).map((t) => t.id),
-    stash_ids: performer.stash_ids ?? undefined,
-    image: undefined,
+    career_length: performer.career_length ?? "",
+    urls: performer.urls ?? [],
     details: performer.details ?? "",
-    death_date: performer.death_date ?? "",
-    hair_color: performer.hair_color ?? "",
-    weight: performer.weight ?? undefined,
+    tag_ids: (performer.tags ?? []).map((t) => t.id),
     ignore_auto_tag: performer.ignore_auto_tag ?? false,
+    stash_ids: getStashIDs(performer.stash_ids),
+    custom_fields: cloneDeep(performer.custom_fields ?? {}),
   };
 
-  type InputValues = typeof initialValues;
+  type InputValues = yup.InferType<typeof schema>;
 
-  const formik = useFormik({
+  const [customFieldsError, setCustomFieldsError] = useState<string>();
+
+  function submit(values: InputValues) {
+    const input = {
+      ...schema.cast(values),
+      custom_fields: customFieldInput(isNew, values.custom_fields),
+    };
+    onSave(input);
+  }
+
+  const formik = useFormik<InputValues>({
     initialValues,
-    validationSchema: schema,
-    onSubmit: (values) => onSave(values),
+    enableReinitialize: true,
+    validate: yupFormikValidate(schema),
+    onSubmit: submit,
   });
+
+  const { tags, updateTagsStateFromScraper, tagsControl } = useTagsEdit(
+    performer.tags,
+    (ids) => formik.setFieldValue("tag_ids", ids)
+  );
 
   function translateScrapedGender(scrapedGender?: string) {
     if (!scrapedGender) {
       return;
     }
 
-    let retEnum: GQL.GenderEnum | undefined;
-
     // try to translate from enum values first
-    const upperGender = scrapedGender?.toUpperCase();
+    const upperGender = scrapedGender.toUpperCase();
     const asEnum = genderToString(upperGender);
     if (asEnum) {
-      retEnum = stringToGender(asEnum);
+      return stringToGender(asEnum);
     } else {
       // try to match against gender strings
       const caseInsensitive = true;
-      retEnum = stringToGender(scrapedGender, caseInsensitive);
+      return stringToGender(scrapedGender, caseInsensitive);
     }
-
-    return genderToString(retEnum);
   }
 
-  function renderNewTags() {
-    if (!newTags || newTags.length === 0) {
+  function translateScrapedCircumcised(scrapedCircumcised?: string) {
+    if (!scrapedCircumcised) {
       return;
     }
 
-    const ret = (
-      <>
-        {newTags.map((t) => (
-          <Badge
-            className="tag-item"
-            variant="secondary"
-            key={t.name}
-            onClick={() => createNewTag(t)}
-          >
-            {t.name}
-            <Button className="minimal ml-2">
-              <Icon className="fa-fw" icon={faPlus} />
-            </Button>
-          </Badge>
-        ))}
-      </>
-    );
-
-    const minCollapseLength = 10;
-
-    if (newTags.length >= minCollapseLength) {
-      return (
-        <CollapseButton text={`Missing (${newTags.length})`}>
-          {ret}
-        </CollapseButton>
-      );
-    }
-
-    return ret;
-  }
-
-  async function createNewTag(toCreate: GQL.ScrapedTag) {
-    const tagInput: GQL.TagCreateInput = { name: toCreate.name ?? "" };
-    try {
-      const result = await createTag({
-        variables: {
-          input: tagInput,
-        },
-      });
-
-      if (!result.data?.tagCreate) {
-        Toast.error(new Error("Failed to create tag"));
-        return;
-      }
-
-      // add the new tag to the new tags value
-      const newTagIds = formik.values.tag_ids.concat([
-        result.data.tagCreate.id,
-      ]);
-      formik.setFieldValue("tag_ids", newTagIds);
-
-      // remove the tag from the list
-      const newTagsClone = newTags!.concat();
-      const pIndex = newTagsClone.indexOf(toCreate);
-      newTagsClone.splice(pIndex, 1);
-
-      setNewTags(newTagsClone);
-
-      Toast.success({
-        content: (
-          <span>
-            Created tag: <b>{toCreate.name}</b>
-          </span>
-        ),
-      });
-    } catch (e) {
-      Toast.error(e);
+    const upperCircumcised = scrapedCircumcised.toUpperCase();
+    const asEnum = circumcisedToString(upperCircumcised);
+    if (asEnum) {
+      return stringToCircumcised(asEnum);
+    } else {
+      const caseInsensitive = true;
+      return stringToCircumcised(scrapedCircumcised, caseInsensitive);
     }
   }
 
@@ -262,9 +226,14 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     if (state.name) {
       formik.setFieldValue("name", state.name);
     }
-
+    if (state.disambiguation) {
+      formik.setFieldValue("disambiguation", state.disambiguation);
+    }
     if (state.aliases) {
-      formik.setFieldValue("aliases", state.aliases);
+      formik.setFieldValue(
+        "alias_list",
+        state.aliases.split(",").map((a) => a.trim())
+      );
     }
     if (state.birthdate) {
       formik.setFieldValue("birthdate", state.birthdate);
@@ -279,7 +248,7 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
       formik.setFieldValue("eye_color", state.eye_color);
     }
     if (state.height) {
-      formik.setFieldValue("height", state.height);
+      formik.setFieldValue("height_cm", parseInt(state.height, 10));
     }
     if (state.measurements) {
       formik.setFieldValue("measurements", state.measurements);
@@ -296,42 +265,36 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     if (state.piercings) {
       formik.setFieldValue("piercings", state.piercings);
     }
-    if (state.url) {
-      formik.setFieldValue("url", state.url);
-    }
-    if (state.twitter) {
-      formik.setFieldValue("twitter", state.twitter);
-    }
-    if (state.instagram) {
-      formik.setFieldValue("instagram", state.instagram);
+    if (state.urls) {
+      formik.setFieldValue("urls", state.urls);
     }
     if (state.gender) {
       // gender is a string in the scraper data
-      formik.setFieldValue(
-        "gender",
-        translateScrapedGender(state.gender ?? undefined)
-      );
+      const newGender = translateScrapedGender(state.gender);
+      if (newGender) {
+        formik.setFieldValue("gender", newGender);
+      }
     }
-    if (state.tags) {
-      // map tags to their ids and filter out those not found
-      const newTagIds = state.tags.map((t) => t.stored_id).filter((t) => t);
-      formik.setFieldValue("tag_ids", newTagIds);
-
-      setNewTags(state.tags.filter((t) => !t.stored_id));
+    if (state.circumcised) {
+      // circumcised is a string in the scraper data
+      const newCircumcised = translateScrapedCircumcised(state.circumcised);
+      if (newCircumcised) {
+        formik.setFieldValue("circumcised", newCircumcised);
+      }
     }
+    updateTagsStateFromScraper(state.tags ?? undefined);
 
     // image is a base64 string
     // #404: don't overwrite image if it has been modified by the user
     // overwrite if not new since it came from a dialog
-    // overwrite if image was cleared (`null`)
-    // otherwise follow existing behaviour (`undefined`)
+    // overwrite if image is unset
     if (
-      (!isNew || [null, undefined].includes(formik.values.image)) &&
+      (!isNew || !formik.values.image) &&
       state.images &&
       state.images.length > 0
     ) {
       const imageStr = state.images[0];
-      formik.setFieldValue("image", imageStr ?? undefined);
+      formik.setFieldValue("image", imageStr);
     }
     if (state.details) {
       formik.setFieldValue("details", state.details);
@@ -345,8 +308,14 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     if (state.weight) {
       formik.setFieldValue("weight", state.weight);
     }
+    if (state.penis_length) {
+      formik.setFieldValue("penis_length", state.penis_length);
+    }
 
-    const remoteSiteID = state.remote_site_id;
+    updateStashIDs(state.remote_site_id);
+  }
+
+  function updateStashIDs(remoteSiteID: string | null | undefined) {
     if (remoteSiteID && (scraper as IStashBox).endpoint) {
       const newIDs =
         formik.values.stash_ids?.filter(
@@ -355,56 +324,57 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
       newIDs?.push({
         endpoint: (scraper as IStashBox).endpoint,
         stash_id: remoteSiteID,
+        updated_at: new Date().toISOString(),
       });
       formik.setFieldValue("stash_ids", newIDs);
     }
   }
 
-  function onImageLoad(imageData: string) {
+  const encodingImage = ImageUtils.usePasteImage(onImageLoad);
+
+  useEffect(() => {
+    setImage(formik.values.image);
+  }, [formik.values.image, setImage]);
+
+  useEffect(() => {
+    setEncodingImage(encodingImage);
+  }, [setEncodingImage, encodingImage]);
+
+  function onImageLoad(imageData: string | null) {
     formik.setFieldValue("image", imageData);
   }
 
-  async function onSave(performerInput: InputValues) {
+  function onImageChange(event: React.FormEvent<HTMLInputElement>) {
+    ImageUtils.onImageChange(event, onImageLoad);
+  }
+
+  async function onSave(input: InputValues, andNew?: boolean) {
     setIsLoading(true);
     try {
-      if (isNew) {
-        const input = getCreateValues(performerInput);
-        const result = await createPerformer({
-          variables: {
-            input,
-          },
-        });
-        if (result.data?.performerCreate) {
-          history.push(`/performers/${result.data.performerCreate.id}`);
-        }
-      } else {
-        const input = getUpdateValues(performerInput);
-
-        await updatePerformer({
-          variables: {
-            input: {
-              ...input,
-              stash_ids: getStashIDs(performerInput?.stash_ids),
-            },
-          },
-        });
-      }
+      await onSubmit(input, andNew);
+      formik.resetForm();
     } catch (e) {
       Toast.error(e);
-      setIsLoading(false);
-      return;
-    }
-    if (!isNew && onCancelEditing) {
-      onCancelEditing();
     }
     setIsLoading(false);
+  }
+
+  async function onSaveAndNewClick() {
+    const { values } = formik;
+    const input = {
+      ...schema.cast(values),
+      custom_fields: customFieldInput(isNew, values.custom_fields),
+    };
+    onSave(input, true);
   }
 
   // set up hotkeys
   useEffect(() => {
     if (isVisible) {
       Mousetrap.bind("s s", () => {
-        onSave?.(formik.values);
+        if (formik.dirty) {
+          formik.submitForm();
+        }
       });
 
       return () => {
@@ -418,22 +388,8 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
   });
 
   useEffect(() => {
-    if (onImageChange) {
-      onImageChange(formik.values.image);
-    }
-    return () => onImageChange?.();
-  }, [formik.values.image, onImageChange]);
-
-  useEffect(() => onImageEncoding?.(imageEncoding), [
-    onImageEncoding,
-    imageEncoding,
-  ]);
-
-  useEffect(() => {
-    const newQueryableScrapers = (
-      Scrapers?.data?.listPerformerScrapers ?? []
-    ).filter((s) =>
-      s.performer?.supported_scrapes.includes(GQL.ScrapeType.Name)
+    const newQueryableScrapers = (Scrapers?.data?.listScrapers ?? []).filter(
+      (s) => s.performer?.supported_scrapes.includes(GQL.ScrapeType.Name)
     );
 
     setQueryableScrapers(newQueryableScrapers);
@@ -441,38 +397,10 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
 
   if (isLoading) return <LoadingIndicator />;
 
-  function getUpdateValues(values: InputValues): GQL.PerformerUpdateInput {
-    return {
-      ...values,
-      gender: stringToGender(values.gender) ?? null,
-      weight: Number(values.weight),
-      id: performer.id ?? "",
-    };
-  }
-
-  function getCreateValues(values: InputValues): GQL.PerformerCreateInput {
-    return {
-      ...values,
-      gender: stringToGender(values.gender),
-      weight: Number(values.weight),
-    };
-  }
-
-  function onImageChangeHandler(event: React.FormEvent<HTMLInputElement>) {
-    ImageUtils.onImageChange(event, onImageLoad);
-  }
-
-  function onImageChangeURL(url: string) {
-    formik.setFieldValue("image", url);
-  }
-
   async function onReloadScrapers() {
     setIsLoading(true);
     try {
       await mutateReloadScrapers();
-
-      // reload the performer scrapers
-      await Scrapers.refetch();
     } catch (e) {
       Toast.error(e);
     } finally {
@@ -516,8 +444,7 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     }
   }
 
-  async function onScrapePerformerURL() {
-    const { url } = formik.values;
+  async function onScrapePerformerURL(url: string) {
     if (!url) return;
     setIsLoading(true);
     try {
@@ -608,7 +535,7 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     );
 
     return (
-      <Dropdown drop="up" className="d-inline-block">
+      <Dropdown className="d-inline-block">
         <Dropdown.Toggle variant="secondary" className="mr-2">
           <FormattedMessage id="actions.scrape_with" />
         </Dropdown.Toggle>
@@ -620,7 +547,7 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
   function urlScrapable(scrapedUrl?: string) {
     return (
       !!scrapedUrl &&
-      (Scrapers?.data?.listPerformerScrapers ?? []).some((s) =>
+      (Scrapers?.data?.listScrapers ?? []).some((s) =>
         (s?.performer?.urls ?? []).some((u) => scrapedUrl.includes(u))
       )
     );
@@ -631,16 +558,15 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
       return;
     }
 
-    const currentPerformer: Partial<GQL.PerformerUpdateInput> = {
+    const currentPerformer = {
       ...formik.values,
-      gender: stringToGender(formik.values.gender),
       image: formik.values.image ?? performer.image_path,
-      weight: Number(formik.values.weight),
     };
 
     return (
       <PerformerScrapeDialog
         performer={currentPerformer}
+        performerTags={tags}
         scraped={scrapedPerformer}
         scraper={scraper}
         onClose={(p) => {
@@ -658,25 +584,27 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     setScraper(undefined);
   }
 
+  function onStashIDSelected(item?: GQL.StashIdInput) {
+    if (!item) return;
+    formik.setFieldValue(
+      "stash_ids",
+      addUpdateStashID(formik.values.stash_ids, item)
+    );
+  }
+
   function renderButtons(classNames: string) {
     return (
       <div className={cx("details-edit", "col-xl-9", classNames)}>
-        {!isNew && onCancelEditing ? (
-          <Button
-            className="mr-2"
-            variant="primary"
-            onClick={() => onCancelEditing()}
-          >
+        {!isNew && onCancel ? (
+          <Button className="mr-2" variant="primary" onClick={onCancel}>
             <FormattedMessage id="actions.cancel" />
           </Button>
-        ) : (
-          ""
-        )}
+        ) : null}
         {renderScraperMenu()}
         <ImageInput
           isEditing
-          onImageChange={onImageChangeHandler}
-          onImageURL={onImageChangeURL}
+          onImageChange={onImageChange}
+          onImageURL={onImageLoad}
         />
         <div>
           <Button
@@ -687,13 +615,33 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
             <FormattedMessage id="actions.clear_image" />
           </Button>
         </div>
-        <Button
-          variant="success"
-          disabled={!formik.dirty}
-          onClick={() => formik.submitForm()}
-        >
-          <FormattedMessage id="actions.save" />
-        </Button>
+        {isNew ? (
+          <SplitButton
+            id="save-split-button"
+            variant="success"
+            disabled={
+              !isEqual(formik.errors, {}) || customFieldsError !== undefined
+            }
+            title={intl.formatMessage({ id: "actions.save" })}
+            onClick={() => formik.submitForm()}
+          >
+            <Dropdown.Item onClick={() => onSaveAndNewClick()}>
+              <FormattedMessage id="actions.save_and_new" />
+            </Dropdown.Item>
+          </SplitButton>
+        ) : (
+          <Button
+            variant="success"
+            disabled={
+              (!isNew && !formik.dirty) ||
+              !isEqual(formik.errors, {}) ||
+              customFieldsError !== undefined
+            }
+            onClick={() => formik.submitForm()}
+          >
+            <FormattedMessage id="actions.save" />
+          </Button>
+        )}
       </div>
     );
   }
@@ -718,107 +666,52 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
     ) : undefined;
   };
 
+  const {
+    renderField,
+    renderInputField,
+    renderSelectField,
+    renderDateField,
+    renderStringListField,
+    renderStashIDsField,
+    renderURLListField,
+  } = formikUtils(intl, formik);
+
+  function renderCountryField() {
+    const title = intl.formatMessage({ id: "country" });
+    const control = (
+      <CountrySelect
+        value={formik.values.country}
+        onChange={(v) => formik.setFieldValue("country", v)}
+      />
+    );
+
+    return renderField("country", title, control);
+  }
+
   function renderTagsField() {
-    return (
-      <Form.Group controlId="tags" as={Row}>
-        <Form.Label column sm={labelXS} xl={labelXL}>
-          <FormattedMessage id="tags" defaultMessage="Tags" />
-        </Form.Label>
-        <Col xs={fieldXS} xl={fieldXL}>
-          <TagSelect
-            menuPortalTarget={document.body}
-            isMulti
-            onSelect={(items) =>
-              formik.setFieldValue(
-                "tag_ids",
-                items.map((item) => item.id)
-              )
-            }
-            ids={formik.values.tag_ids}
-          />
-          {renderNewTags()}
-        </Col>
-      </Form.Group>
-    );
-  }
+    const title = intl.formatMessage({ id: "tags" });
 
-  const removeStashID = (stashID: GQL.StashIdInput) => {
-    formik.setFieldValue(
-      "stash_ids",
-      (formik.values.stash_ids ?? []).filter(
-        (s) =>
-          !(s.endpoint === stashID.endpoint && s.stash_id === stashID.stash_id)
-      )
-    );
-  };
-
-  function renderStashIDs() {
-    if (!formik.values.stash_ids?.length) {
-      return;
-    }
-
-    return (
-      <Row>
-        <Form.Label column sm={labelXS} xl={labelXL}>
-          StashIDs
-        </Form.Label>
-        <Col sm={fieldXS} xl={fieldXL}>
-          <ul className="pl-0">
-            {formik.values.stash_ids.map((stashID) => {
-              const base = stashID.endpoint.match(/https?:\/\/.*?\//)?.[0];
-              const link = base ? (
-                <a
-                  href={`${base}performers/${stashID.stash_id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {stashID.stash_id}
-                </a>
-              ) : (
-                stashID.stash_id
-              );
-              return (
-                <li key={stashID.stash_id} className="row no-gutters mb-1">
-                  <Button
-                    variant="danger"
-                    className="mr-2 py-0"
-                    title={intl.formatMessage({ id: "actions.delete_stashid" })}
-                    onClick={() => removeStashID(stashID)}
-                  >
-                    <Icon icon={faTrashAlt} />
-                  </Button>
-                  {link}
-                </li>
-              );
-            })}
-          </ul>
-        </Col>
-      </Row>
-    );
-  }
-
-  function renderTextField(field: string, title: string, placeholder?: string) {
-    return (
-      <Form.Group controlId={field} as={Row}>
-        <Form.Label column xs={labelXS} xl={labelXL}>
-          <FormattedMessage id={field} defaultMessage={title} />
-        </Form.Label>
-        <Col xs={fieldXS} xl={fieldXL}>
-          <Form.Control
-            className="text-input"
-            placeholder={placeholder ?? title}
-            {...formik.getFieldProps(field)}
-            isInvalid={!!formik.getFieldMeta(field).error}
-          />
-        </Col>
-      </Form.Group>
-    );
+    return renderField("tag_ids", title, tagsControl());
   }
 
   return (
     <>
       {renderScrapeModal()}
       {maybeRenderScrapeDialog()}
+      {isStashIDSearchOpen && (
+        <StashBoxIDSearchModal
+          entityType="performer"
+          stashBoxes={stashConfig?.general.stashBoxes ?? []}
+          excludedStashBoxEndpoints={formik.values.stash_ids.map(
+            (s) => s.endpoint
+          )}
+          onSelectItem={(item) => {
+            onStashIDSelected(item);
+            setIsStashIDSearchOpen(false);
+          }}
+          initialQuery={performer.name ?? ""}
+        />
+      )}
 
       <Prompt
         when={formik.dirty}
@@ -827,156 +720,68 @@ export const PerformerEditPanel: React.FC<IPerformerDetails> = ({
       {renderButtons("mb-3")}
 
       <Form noValidate onSubmit={formik.handleSubmit} id="performer-edit">
-        <Form.Group controlId="name" as={Row}>
-          <Form.Label column xs={labelXS} xl={labelXL}>
-            <FormattedMessage id="name" />
-          </Form.Label>
-          <Col xs={fieldXS} xl={fieldXL}>
-            <Form.Control
-              className="text-input"
-              placeholder={intl.formatMessage({ id: "name" })}
-              {...formik.getFieldProps("name")}
-              isInvalid={!!formik.errors.name}
-            />
-            <Form.Control.Feedback type="invalid">
-              {formik.errors.name}
-            </Form.Control.Feedback>
-          </Col>
-        </Form.Group>
+        {renderInputField("name")}
+        {renderInputField("disambiguation")}
 
-        <Form.Group controlId="aliases" as={Row}>
-          <Form.Label column sm={labelXS} xl={labelXL}>
-            <FormattedMessage id="aliases" />
-          </Form.Label>
-          <Col sm={fieldXS} xl={fieldXL}>
-            <Form.Control
-              as="textarea"
-              className="text-input"
-              placeholder={intl.formatMessage({ id: "aliases" })}
-              {...formik.getFieldProps("aliases")}
-            />
-          </Col>
-        </Form.Group>
+        {renderStringListField("alias_list", "aliases", { orderable: false })}
 
-        <Form.Group as={Row}>
-          <Form.Label column xs={labelXS} xl={labelXL}>
-            <FormattedMessage id="gender" />
-          </Form.Label>
-          <Col xs="auto">
-            <Form.Control
-              as="select"
-              className="input-control"
-              {...formik.getFieldProps("gender")}
-            >
-              {genderOptions.map((opt) => (
-                <option value={opt} key={opt}>
-                  {opt}
-                </option>
-              ))}
-            </Form.Control>
-          </Col>
-        </Form.Group>
+        {renderSelectField("gender", stringGenderMap)}
 
-        {renderTextField("birthdate", "Birthdate", "YYYY-MM-DD")}
-        {renderTextField("death_date", "Death Date", "YYYY-MM-DD")}
+        {renderDateField("birthdate")}
+        {renderDateField("death_date")}
 
-        <Form.Group as={Row}>
-          <Form.Label column xs={labelXS} xl={labelXL}>
-            <FormattedMessage id="country" />
-          </Form.Label>
-          <Col xs={fieldXS} xl={fieldXL}>
-            <CountrySelect
-              value={formik.getFieldProps("country").value}
-              onChange={(value) => formik.setFieldValue("country", value)}
-            />
-          </Col>
-        </Form.Group>
+        {renderCountryField()}
 
-        {renderTextField("ethnicity", "Ethnicity")}
-        {renderTextField("hair_color", "Hair Color")}
-        {renderTextField("eye_color", "Eye Color")}
-        {renderTextField("height", "Height (cm)")}
-        {renderTextField("weight", "Weight (kg)")}
-        {renderTextField("measurements", "Measurements")}
-        {renderTextField("fake_tits", "Fake Tits")}
+        {renderInputField("ethnicity")}
+        {renderInputField("hair_color")}
+        {renderInputField("eye_color")}
+        {renderInputField("height_cm", "number")}
+        {renderInputField("weight", "number", "weight_kg")}
+        {renderInputField("penis_length", "number", "penis_length_cm")}
 
-        <Form.Group controlId="tattoos" as={Row}>
-          <Form.Label column sm={labelXS} xl={labelXL}>
-            <FormattedMessage id="tattoos" />
-          </Form.Label>
-          <Col sm={fieldXS} xl={fieldXL}>
-            <Form.Control
-              as="textarea"
-              className="text-input"
-              placeholder={intl.formatMessage({ id: "tattoos" })}
-              {...formik.getFieldProps("tattoos")}
-            />
-          </Col>
-        </Form.Group>
+        {renderSelectField("circumcised", stringCircumMap)}
 
-        <Form.Group controlId="piercings" as={Row}>
-          <Form.Label column sm={labelXS} xl={labelXL}>
-            <FormattedMessage id="piercings" />
-          </Form.Label>
-          <Col sm={fieldXS} xl={fieldXL}>
-            <Form.Control
-              as="textarea"
-              className="text-input"
-              placeholder={intl.formatMessage({ id: "piercings" })}
-              {...formik.getFieldProps("piercings")}
-            />
-          </Col>
-        </Form.Group>
+        {renderInputField("measurements")}
+        {renderInputField("fake_tits")}
 
-        {renderTextField("career_length", "Career Length")}
+        {renderInputField("tattoos", "textarea")}
+        {renderInputField("piercings", "textarea")}
 
-        <Form.Group controlId="url" as={Row}>
-          <Form.Label column xs={labelXS} xl={labelXL}>
-            <FormattedMessage id="url" />
-          </Form.Label>
-          <Col xs={fieldXS} xl={fieldXL}>
-            <URLField
-              {...formik.getFieldProps("url")}
-              onScrapeClick={onScrapePerformerURL}
-              urlScrapable={urlScrapable}
-            />
-          </Col>
-        </Form.Group>
+        {renderInputField("career_length")}
 
-        {renderTextField("twitter", "Twitter")}
-        {renderTextField("instagram", "Instagram")}
-        <Form.Group controlId="details" as={Row}>
-          <Form.Label column sm={labelXS} xl={labelXL}>
-            <FormattedMessage id="details" />
-          </Form.Label>
-          <Col sm={fieldXS} xl={fieldXL}>
-            <Form.Control
-              as="textarea"
-              className="text-input"
-              placeholder={intl.formatMessage({ id: "details" })}
-              {...formik.getFieldProps("details")}
-            />
-          </Col>
-        </Form.Group>
+        {renderURLListField("urls", onScrapePerformerURL, urlScrapable)}
+
+        {renderInputField("details", "textarea")}
         {renderTagsField()}
 
-        {renderStashIDs()}
+        {renderStashIDsField(
+          "stash_ids",
+          "performers",
+          "stash_ids",
+          undefined,
+          <Button
+            variant="success"
+            className="mr-2 py-0"
+            onClick={() => setIsStashIDSearchOpen(true)}
+            disabled={!stashConfig?.general.stashBoxes?.length}
+            title={intl.formatMessage({ id: "actions.add_stash_id" })}
+          >
+            <Icon icon={faPlus} />
+          </Button>
+        )}
 
         <hr />
 
-        <Form.Group controlId="ignore-auto-tag" as={Row}>
-          <Form.Label column sm={labelXS} xl={labelXL}>
-            <FormattedMessage id="ignore_auto_tag" />
-          </Form.Label>
-          <Col sm={fieldXS} xl={fieldXL}>
-            <Form.Check
-              {...formik.getFieldProps({
-                name: "ignore_auto_tag",
-                type: "checkbox",
-              })}
-            />
-          </Col>
-        </Form.Group>
+        {renderInputField("ignore_auto_tag", "checkbox")}
+
+        <hr />
+
+        <CustomFieldsInput
+          values={formik.values.custom_fields}
+          onChange={(v) => formik.setFieldValue("custom_fields", v)}
+          error={customFieldsError}
+          setError={(e) => setCustomFieldsError(e)}
+        />
 
         {renderButtons("mt-3")}
       </Form>

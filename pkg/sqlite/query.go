@@ -22,12 +22,10 @@ type queryBuilder struct {
 	recursiveWith bool
 
 	sortAndPagination string
-
-	err error
 }
 
-func (qb queryBuilder) body() string {
-	return fmt.Sprintf("SELECT %s FROM %s%s", strings.Join(qb.columns, ", "), qb.from, qb.joins.toSQL())
+func (qb queryBuilder) body(includeSortPagination bool) string {
+	return fmt.Sprintf("SELECT %s FROM %s%s", strings.Join(qb.columns, ", "), qb.from, qb.joins.toSQL(includeSortPagination))
 }
 
 func (qb *queryBuilder) addColumn(column string) {
@@ -35,7 +33,7 @@ func (qb *queryBuilder) addColumn(column string) {
 }
 
 func (qb queryBuilder) toSQL(includeSortPagination bool) string {
-	body := qb.body()
+	body := qb.body(includeSortPagination)
 
 	withClause := ""
 	if len(qb.withClauses) > 0 {
@@ -61,21 +59,14 @@ func (qb queryBuilder) findIDs(ctx context.Context) ([]int, error) {
 }
 
 func (qb queryBuilder) executeFind(ctx context.Context) ([]int, int, error) {
-	if qb.err != nil {
-		return nil, 0, qb.err
-	}
-
-	body := qb.body()
-
+	const includeSortPagination = true
+	body := qb.body(includeSortPagination)
 	return qb.repository.executeFindQuery(ctx, body, qb.args, qb.sortAndPagination, qb.whereClauses, qb.havingClauses, qb.withClauses, qb.recursiveWith)
 }
 
 func (qb queryBuilder) executeCount(ctx context.Context) (int, error) {
-	if qb.err != nil {
-		return 0, qb.err
-	}
-
-	body := qb.body()
+	const includeSortPagination = false
+	body := qb.body(includeSortPagination)
 
 	withClause := ""
 	if len(qb.withClauses) > 0 {
@@ -121,6 +112,16 @@ func (qb *queryBuilder) addArg(args ...interface{}) {
 	qb.args = append(qb.args, args...)
 }
 
+func (qb *queryBuilder) hasJoin(alias string) bool {
+	for _, j := range qb.joins {
+		if j.alias() == alias {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (qb *queryBuilder) join(table, as, onClause string) {
 	newJoin := join{
 		table:    table,
@@ -132,15 +133,30 @@ func (qb *queryBuilder) join(table, as, onClause string) {
 	qb.joins.add(newJoin)
 }
 
-func (qb *queryBuilder) addJoins(joins ...join) {
-	qb.joins.add(joins...)
+func (qb *queryBuilder) joinSort(table, as, onClause string) {
+	newJoin := join{
+		sort:     true,
+		table:    table,
+		as:       as,
+		onClause: onClause,
+		joinType: "LEFT",
+	}
+
+	qb.joins.add(newJoin)
 }
 
-func (qb *queryBuilder) addFilter(f *filterBuilder) {
+func (qb *queryBuilder) addJoins(joins ...join) {
+	for _, j := range joins {
+		if qb.joins.addUnique(j) {
+			qb.args = append(qb.args, j.args...)
+		}
+	}
+}
+
+func (qb *queryBuilder) addFilter(f *filterBuilder) error {
 	err := f.getError()
 	if err != nil {
-		qb.err = err
-		return
+		return err
 	}
 
 	clause, args := f.generateWithClauses()
@@ -152,6 +168,9 @@ func (qb *queryBuilder) addFilter(f *filterBuilder) {
 		// WITH clause always comes first and thus precedes alk args
 		qb.args = append(args, qb.args...)
 	}
+
+	// add joins here to insert args
+	qb.addJoins(f.getAllJoins()...)
 
 	clause, args = f.generateWhereClauses()
 	if len(clause) > 0 {
@@ -171,7 +190,7 @@ func (qb *queryBuilder) addFilter(f *filterBuilder) {
 		qb.addArg(args...)
 	}
 
-	qb.addJoins(f.getAllJoins()...)
+	return nil
 }
 
 func (qb *queryBuilder) parseQueryString(columns []string, q string) {

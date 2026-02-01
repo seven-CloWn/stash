@@ -1,20 +1,18 @@
 import React, { useMemo } from "react";
 import { useIntl } from "react-intl";
-import {
-  FrontPageContent,
-  ICustomFilter,
-  ISavedFilterRow,
-} from "src/core/config";
+import { FrontPageContent, ICustomFilter } from "src/core/config";
 import * as GQL from "src/core/generated-graphql";
 import { useFindSavedFilter } from "src/core/StashService";
+import { useConfigurationContext } from "src/hooks/Config";
 import { ListFilterModel } from "src/models/list-filter/filter";
 import { GalleryRecommendationRow } from "../Galleries/GalleryRecommendationRow";
 import { ImageRecommendationRow } from "../Images/ImageRecommendationRow";
-import { MovieRecommendationRow } from "../Movies/MovieRecommendationRow";
+import { GroupRecommendationRow } from "../Groups/GroupRecommendationRow";
 import { PerformerRecommendationRow } from "../Performers/PerformerRecommendationRow";
 import { SceneRecommendationRow } from "../Scenes/SceneRecommendationRow";
 import { StudioRecommendationRow } from "../Studios/StudioRecommendationRow";
 import { TagRecommendationRow } from "../Tags/TagRecommendationRow";
+import { SceneMarkerRecommendationRow } from "../Scenes/SceneMarkerRecommendationRow";
 
 interface IFilter {
   mode: GQL.FilterMode;
@@ -47,8 +45,9 @@ const RecommendationRow: React.FC<IFilter> = ({ mode, filter, header }) => {
         />
       );
     case GQL.FilterMode.Movies:
+    case GQL.FilterMode.Groups:
       return (
-        <MovieRecommendationRow
+        <GroupRecommendationRow
           isTouch={isTouch}
           filter={filter}
           header={header}
@@ -86,6 +85,14 @@ const RecommendationRow: React.FC<IFilter> = ({ mode, filter, header }) => {
           header={header}
         />
       );
+    case GQL.FilterMode.SceneMarkers:
+      return (
+        <SceneMarkerRecommendationRow
+          isTouch={isTouch}
+          filter={filter}
+          header={header}
+        />
+      );
     default:
       return <></>;
   }
@@ -98,19 +105,20 @@ interface ISavedFilterResults {
 const SavedFilterResults: React.FC<ISavedFilterResults> = ({
   savedFilterID,
 }) => {
+  const { configuration: config } = useConfigurationContext();
   const { loading, data } = useFindSavedFilter(savedFilterID.toString());
 
   const filter = useMemo(() => {
     if (!data?.findSavedFilter) return;
 
-    const { mode, filter: filterJSON } = data.findSavedFilter;
+    const { mode } = data.findSavedFilter;
 
-    const ret = new ListFilterModel(mode);
+    const ret = new ListFilterModel(mode, config);
     ret.currentPage = 1;
-    ret.configureFromJSON(filterJSON);
+    ret.configureFromSavedFilter(data.findSavedFilter);
     ret.randomSeed = -1;
     return ret;
-  }, [data?.findSavedFilter]);
+  }, [data?.findSavedFilter, config]);
 
   if (loading || !data?.findSavedFilter || !filter) {
     return <></>;
@@ -128,18 +136,19 @@ interface ICustomFilterProps {
 const CustomFilterResults: React.FC<ICustomFilterProps> = ({
   customFilter,
 }) => {
+  const { configuration: config } = useConfigurationContext();
   const intl = useIntl();
 
   const filter = useMemo(() => {
     const itemsPerPage = 25;
-    const ret = new ListFilterModel(customFilter.mode);
+    const ret = new ListFilterModel(customFilter.mode, config);
     ret.sortBy = customFilter.sortBy;
     ret.sortDirection = customFilter.direction;
     ret.itemsPerPage = itemsPerPage;
     ret.currentPage = 1;
     ret.randomSeed = -1;
     return ret;
-  }, [customFilter]);
+  }, [customFilter, config]);
 
   const header = customFilter.message
     ? intl.formatMessage(
@@ -164,13 +173,15 @@ interface IProps {
 export const Control: React.FC<IProps> = ({ content }) => {
   switch (content.__typename) {
     case "SavedFilter":
+      if (!content.savedFilterId) {
+        return <div>Error: missing savedFilterId</div>;
+      }
+
       return (
-        <SavedFilterResults
-          savedFilterID={(content as ISavedFilterRow).savedFilterId.toString()}
-        />
+        <SavedFilterResults savedFilterID={content.savedFilterId.toString()} />
       );
     case "CustomFilter":
-      return <CustomFilterResults customFilter={content as ICustomFilter} />;
+      return <CustomFilterResults customFilter={content} />;
     default:
       return <></>;
   }

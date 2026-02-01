@@ -6,8 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/stashapp/stash/pkg/plugin/hook"
+	"github.com/stashapp/stash/pkg/python"
+	"github.com/stashapp/stash/pkg/utils"
 	"gopkg.in/yaml.v2"
 )
 
@@ -56,6 +60,104 @@ type Config struct {
 
 	// The hooks configurations for hooks registered by this plugin.
 	Hooks []*HookConfig `yaml:"hooks"`
+
+	// Javascript files that will be injected into the stash UI.
+	UI UIConfig `yaml:"ui"`
+
+	// Settings that will be used to configure the plugin.
+	Settings map[string]SettingConfig `yaml:"settings"`
+}
+
+type PluginCSP struct {
+	ScriptSrc  []string `json:"script-src" yaml:"script-src"`
+	StyleSrc   []string `json:"style-src" yaml:"style-src"`
+	ConnectSrc []string `json:"connect-src" yaml:"connect-src"`
+}
+
+type UIConfig struct {
+	// Requires is a list of plugin IDs that this plugin depends on.
+	// These plugins will be loaded before this plugin.
+	Requires []string `yaml:"requires"`
+
+	// Content Security Policy configuration for the plugin.
+	CSP PluginCSP `yaml:"csp"`
+
+	// Javascript files that will be injected into the stash UI.
+	// These may be URLs or paths to files relative to the plugin configuration file.
+	Javascript []string `yaml:"javascript"`
+
+	// CSS files that will be injected into the stash UI.
+	// These may be URLs or paths to files relative to the plugin configuration file.
+	CSS []string `yaml:"css"`
+
+	// Assets is a map of URL prefixes to hosted directories.
+	// This allows plugins to serve static assets from a URL path.
+	// Plugin assets are exposed via the /plugin/{pluginId}/assets path.
+	// For example, if the plugin configuration file contains:
+	// /foo: bar
+	// /bar: baz
+	// /: root
+	// Then the following requests will be mapped to the following files:
+	// /plugin/{pluginId}/assets/foo/file.txt -> {pluginDir}/foo/file.txt
+	// /plugin/{pluginId}/assets/bar/file.txt -> {pluginDir}/baz/file.txt
+	// /plugin/{pluginId}/assets/file.txt -> {pluginDir}/root/file.txt
+	Assets utils.URLMap `yaml:"assets"`
+}
+
+func isURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+func (c UIConfig) getCSSFiles(parent Config) []string {
+	var ret []string
+	for _, v := range c.CSS {
+		if !isURL(v) {
+			ret = append(ret, filepath.Join(parent.getConfigPath(), v))
+		}
+	}
+
+	return ret
+}
+
+func (c UIConfig) getExternalCSS() []string {
+	var ret []string
+	for _, v := range c.CSS {
+		if isURL(v) {
+			ret = append(ret, v)
+		}
+	}
+
+	return ret
+}
+
+func (c UIConfig) getJavascriptFiles(parent Config) []string {
+	var ret []string
+	for _, v := range c.Javascript {
+		if !isURL(v) {
+			ret = append(ret, filepath.Join(parent.getConfigPath(), v))
+		}
+	}
+
+	return ret
+}
+
+func (c UIConfig) getExternalScripts() []string {
+	var ret []string
+	for _, v := range c.Javascript {
+		if isURL(v) {
+			ret = append(ret, v)
+		}
+	}
+
+	return ret
+}
+
+type SettingConfig struct {
+	// defaults to string
+	Type PluginSettingTypeEnum `yaml:"type"`
+	// defaults to key name
+	DisplayName string `yaml:"displayName"`
+	Description string `yaml:"description"`
 }
 
 func (c Config) getPluginTasks(includePlugin bool) []*PluginTask {
@@ -95,10 +197,40 @@ func (c Config) getPluginHooks(includePlugin bool) []*PluginHook {
 	return ret
 }
 
-func convertHooks(hooks []HookTriggerEnum) []string {
+func convertHooks(hooks []hook.TriggerEnum) []string {
 	var ret []string
 	for _, h := range hooks {
 		ret = append(ret, h.String())
+	}
+
+	return ret
+}
+
+func (c Config) getPluginSettings() []PluginSetting {
+	ret := []PluginSetting{}
+
+	var keys []string
+	for k := range c.Settings {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		o := c.Settings[k]
+		t := o.Type
+		if t == "" {
+			t = PluginSettingTypeEnumString
+		}
+
+		s := PluginSetting{
+			Name:        k,
+			DisplayName: o.DisplayName,
+			Description: o.Description,
+			Type:        t,
+		}
+
+		ret = append(ret, s)
 	}
 
 	return ret
@@ -121,6 +253,17 @@ func (c Config) toPlugin() *Plugin {
 		Version:     c.Version,
 		Tasks:       c.getPluginTasks(false),
 		Hooks:       c.getPluginHooks(false),
+		UI: PluginUI{
+			Requires:       c.UI.Requires,
+			ExternalScript: c.UI.getExternalScripts(),
+			ExternalCSS:    c.UI.getExternalCSS(),
+			Javascript:     c.UI.getJavascriptFiles(c),
+			CSS:            c.UI.getCSSFiles(c),
+			CSP:            c.UI.CSP,
+			Assets:         c.UI.Assets,
+		},
+		Settings:   c.getPluginSettings(),
+		ConfigPath: c.path,
 	}
 }
 
@@ -134,7 +277,7 @@ func (c Config) getTask(name string) *OperationConfig {
 	return nil
 }
 
-func (c Config) getHooks(hookType HookTriggerEnum) []*HookConfig {
+func (c Config) getHooks(hookType hook.TriggerEnum) []*HookConfig {
 	var ret []*HookConfig
 	for _, h := range c.Hooks {
 		for _, t := range h.TriggeredBy {
@@ -152,14 +295,18 @@ func (c Config) getConfigPath() string {
 }
 
 func (c Config) getExecCommand(task *OperationConfig) []string {
-	ret := c.Exec
+	// #4859 - don't modify the original exec command
+	ret := append([]string{}, c.Exec...)
 
-	ret = append(ret, task.ExecArgs...)
+	if task != nil {
+		ret = append(ret, task.ExecArgs...)
+	}
 
-	if len(ret) > 0 {
+	// #4859 - don't use the plugin path in the exec command if it is a python command
+	if len(ret) > 0 && !python.IsPythonCommand(ret[0]) {
 		_, err := exec.LookPath(ret[0])
 		if err != nil {
-			// change command to use absolute path
+			// change command to run from the plugin path
 			pluginPath := filepath.Dir(c.path)
 			ret[0] = filepath.Join(pluginPath, ret[0])
 		}
@@ -176,6 +323,20 @@ func (c Config) getExecCommand(task *OperationConfig) []string {
 	}
 
 	return ret
+}
+
+func (c Config) valid() error {
+	if c.Interface != "" && !c.Interface.Valid() {
+		return fmt.Errorf("invalid interface type %s", c.Interface)
+	}
+
+	for k, o := range c.Settings {
+		if o.Type != "" && !o.Type.IsValid() {
+			return fmt.Errorf("invalid type %s for setting %s", k, o.Type)
+		}
+	}
+
+	return nil
 }
 
 type interfaceEnum string
@@ -242,7 +403,7 @@ type HookConfig struct {
 	OperationConfig `yaml:",inline"`
 
 	// A list of stash operations that will be used to trigger this hook operation.
-	TriggeredBy []HookTriggerEnum `yaml:"triggeredBy"`
+	TriggeredBy []hook.TriggerEnum `yaml:"triggeredBy"`
 }
 
 func loadPluginFromYAML(reader io.Reader) (*Config, error) {
@@ -259,8 +420,8 @@ func loadPluginFromYAML(reader io.Reader) (*Config, error) {
 		ret.Interface = InterfaceEnumRaw
 	}
 
-	if !ret.Interface.Valid() {
-		return nil, fmt.Errorf("invalid interface type %s", ret.Interface)
+	if err := ret.valid(); err != nil {
+		return nil, err
 	}
 
 	return ret, nil

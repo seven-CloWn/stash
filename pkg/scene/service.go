@@ -1,24 +1,23 @@
+// Package scene provides the application logic for scene functionality.
+// Most functionality is provided by [Service].
 package scene
 
 import (
-	"context"
-
-	"github.com/stashapp/stash/pkg/file"
 	"github.com/stashapp/stash/pkg/models"
+	"github.com/stashapp/stash/pkg/models/paths"
+	"github.com/stashapp/stash/pkg/plugin"
 )
 
-type FinderByFile interface {
-	FindByFileID(ctx context.Context, fileID file.ID) ([]*models.Scene, error)
-}
-
-type Repository interface {
-	FinderByFile
-	Destroyer
-	models.VideoFileLoader
+type Config interface {
+	GetVideoFileNamingAlgorithm() models.HashAlgorithm
 }
 
 type Service struct {
-	File            file.Store
-	Repository      Repository
-	MarkerDestroyer MarkerDestroyer
+	File             models.FileReaderWriter
+	Repository       models.SceneReaderWriter
+	MarkerRepository models.SceneMarkerReaderWriter
+	PluginCache      *plugin.Cache
+
+	Paths  *paths.Paths
+	Config Config
 }

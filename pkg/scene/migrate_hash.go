@@ -16,14 +16,6 @@ func MigrateHash(p *paths.Paths, oldHash string, newHash string) {
 	migrateSceneFiles(oldPath, newPath)
 
 	scenePaths := p.Scene
-	oldPath = scenePaths.GetThumbnailScreenshotPath(oldHash)
-	newPath = scenePaths.GetThumbnailScreenshotPath(newHash)
-	migrateSceneFiles(oldPath, newPath)
-
-	oldPath = scenePaths.GetScreenshotPath(oldHash)
-	newPath = scenePaths.GetScreenshotPath(newHash)
-	migrateSceneFiles(oldPath, newPath)
-
 	oldPath = scenePaths.GetVideoPreviewPath(oldHash)
 	newPath = scenePaths.GetVideoPreviewPath(newHash)
 	migrateSceneFiles(oldPath, newPath)
@@ -48,6 +40,12 @@ func MigrateHash(p *paths.Paths, oldHash string, newHash string) {
 	oldPath = scenePaths.GetInteractiveHeatmapPath(oldHash)
 	newPath = scenePaths.GetInteractiveHeatmapPath(newHash)
 	migrateSceneFiles(oldPath, newPath)
+
+	// #3986 - migrate scene marker files
+	markerPaths := p.SceneMarkers
+	oldPath = markerPaths.GetFolderPath(oldHash)
+	newPath = markerPaths.GetFolderPath(newHash)
+	migrateSceneFolder(oldPath, newPath)
 }
 
 func migrateSceneFiles(oldName, newName string) {
@@ -67,6 +65,17 @@ func migrateSceneFiles(oldName, newName string) {
 
 // #2481: migrate vtt file contents in addition to renaming
 func migrateVttFile(vttPath, oldSpritePath, newSpritePath string) {
+	// #3356 - don't try to migrate if the file doesn't exist
+	exists, err := fsutil.FileExists(vttPath)
+	if err != nil && !os.IsNotExist(err) {
+		logger.Errorf("Error checking existence of %s: %s", vttPath, err.Error())
+		return
+	}
+
+	if !exists {
+		return
+	}
+
 	contents, err := os.ReadFile(vttPath)
 	if err != nil {
 		logger.Errorf("Error reading %s for vtt migration: %v", vttPath, err)
@@ -81,5 +90,20 @@ func migrateVttFile(vttPath, oldSpritePath, newSpritePath string) {
 	if err := os.WriteFile(vttPath, contents, 0644); err != nil {
 		logger.Errorf("Error writing %s for vtt migration: %v", vttPath, err)
 		return
+	}
+}
+
+func migrateSceneFolder(oldName, newName string) {
+	oldExists, err := fsutil.DirExists(oldName)
+	if err != nil && !os.IsNotExist(err) {
+		logger.Errorf("Error checking existence of %s: %s", oldName, err.Error())
+		return
+	}
+
+	if oldExists {
+		logger.Infof("renaming %s to %s", oldName, newName)
+		if err := os.Rename(oldName, newName); err != nil {
+			logger.Errorf("error renaming %s to %s: %s", oldName, newName, err.Error())
+		}
 	}
 }

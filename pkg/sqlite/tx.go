@@ -16,8 +16,8 @@ const (
 
 type dbReader interface {
 	Get(dest interface{}, query string, args ...interface{}) error
-	Select(dest interface{}, query string, args ...interface{}) error
-	Queryx(query string, args ...interface{}) (*sqlx.Rows, error)
+	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
 	QueryxContext(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error)
 }
 
@@ -35,7 +35,9 @@ func logSQL(start time.Time, query string, args ...interface{}) {
 	}
 }
 
-type dbWrapper struct{}
+type dbWrapperType struct{}
+
+var dbWrapper = dbWrapperType{}
 
 func sqlError(err error, sql string, args ...interface{}) error {
 	if err == nil {
@@ -45,46 +47,33 @@ func sqlError(err error, sql string, args ...interface{}) error {
 	return fmt.Errorf("error executing `%s` [%v]: %w", sql, args, err)
 }
 
-func (*dbWrapper) Get(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+func (*dbWrapperType) Get(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
 	tx, err := getDBReader(ctx)
 	if err != nil {
 		return sqlError(err, query, args...)
 	}
 
 	start := time.Now()
-	err = tx.Get(dest, query, args...)
+	err = tx.GetContext(ctx, dest, query, args...)
 	logSQL(start, query, args...)
 
 	return sqlError(err, query, args...)
 }
 
-func (*dbWrapper) Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+func (*dbWrapperType) Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
 	tx, err := getDBReader(ctx)
 	if err != nil {
 		return sqlError(err, query, args...)
 	}
 
 	start := time.Now()
-	err = tx.Select(dest, query, args...)
+	err = tx.SelectContext(ctx, dest, query, args...)
 	logSQL(start, query, args...)
 
 	return sqlError(err, query, args...)
 }
 
-func (*dbWrapper) Queryx(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
-	tx, err := getDBReader(ctx)
-	if err != nil {
-		return nil, sqlError(err, query, args...)
-	}
-
-	start := time.Now()
-	ret, err := tx.Queryx(query, args...)
-	logSQL(start, query, args...)
-
-	return ret, sqlError(err, query, args...)
-}
-
-func (*dbWrapper) QueryxContext(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+func (*dbWrapperType) Queryx(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
 	tx, err := getDBReader(ctx)
 	if err != nil {
 		return nil, sqlError(err, query, args...)
@@ -97,34 +86,38 @@ func (*dbWrapper) QueryxContext(ctx context.Context, query string, args ...inter
 	return ret, sqlError(err, query, args...)
 }
 
-func (*dbWrapper) NamedExec(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
+func (*dbWrapperType) QueryxContext(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+	return dbWrapper.Queryx(ctx, query, args...)
+}
+
+func (*dbWrapperType) NamedExec(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
 	tx, err := getTx(ctx)
 	if err != nil {
 		return nil, sqlError(err, query, arg)
 	}
 
 	start := time.Now()
-	ret, err := tx.NamedExec(query, arg)
+	ret, err := tx.NamedExecContext(ctx, query, arg)
 	logSQL(start, query, arg)
 
 	return ret, sqlError(err, query, arg)
 }
 
-func (*dbWrapper) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+func (*dbWrapperType) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	tx, err := getTx(ctx)
 	if err != nil {
 		return nil, sqlError(err, query, args...)
 	}
 
 	start := time.Now()
-	ret, err := tx.Exec(query, args...)
+	ret, err := tx.ExecContext(ctx, query, args...)
 	logSQL(start, query, args...)
 
 	return ret, sqlError(err, query, args...)
 }
 
 // Prepare creates a prepared statement.
-func (*dbWrapper) Prepare(ctx context.Context, query string, args ...interface{}) (*stmt, error) {
+func (*dbWrapperType) Prepare(ctx context.Context, query string, args ...interface{}) (*stmt, error) {
 	tx, err := getTx(ctx)
 	if err != nil {
 		return nil, sqlError(err, query, args...)
@@ -142,7 +135,7 @@ func (*dbWrapper) Prepare(ctx context.Context, query string, args ...interface{}
 	}, nil
 }
 
-func (*dbWrapper) ExecStmt(ctx context.Context, stmt *stmt, args ...interface{}) (sql.Result, error) {
+func (*dbWrapperType) ExecStmt(ctx context.Context, stmt *stmt, args ...interface{}) (sql.Result, error) {
 	_, err := getTx(ctx)
 	if err != nil {
 		return nil, sqlError(err, stmt.query, args...)

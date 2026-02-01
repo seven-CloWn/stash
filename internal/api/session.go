@@ -1,22 +1,30 @@
 package api
 
 import (
-	"embed"
+	"bytes"
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/stashapp/stash/internal/manager"
 	"github.com/stashapp/stash/internal/manager/config"
+	"github.com/stashapp/stash/pkg/logger"
 	"github.com/stashapp/stash/pkg/session"
+	"github.com/stashapp/stash/pkg/utils"
+	"github.com/stashapp/stash/ui"
 )
 
-const loginRootDir = "login"
-const returnURLParam = "returnURL"
+const (
+	returnURLParam = "returnURL"
 
-func getLoginPage(loginUIBox embed.FS) []byte {
-	data, err := loginUIBox.ReadFile(loginRootDir + "/login.html")
+	defaultLocale = "en-GB"
+)
+
+func getLoginPage() []byte {
+	data, err := fs.ReadFile(ui.LoginUIBox, "login.html")
 	if err != nil {
 		panic(err)
 	}
@@ -28,55 +36,117 @@ type loginTemplateData struct {
 	Error string
 }
 
-func redirectToLogin(loginUIBox embed.FS, w http.ResponseWriter, returnURL string, loginError string) {
-	data := getLoginPage(loginUIBox)
-	templ, err := template.New("Login").Parse(string(data))
+func serveLoginPage(w http.ResponseWriter, r *http.Request, returnURL string, loginError string) {
+	loginPage := string(getLoginPage())
+	prefix := getProxyPrefix(r)
+	loginPage = strings.ReplaceAll(loginPage, "/%BASE_URL%", prefix)
+
+	templ, err := template.New("Login").Parse(loginPage)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("error: %s", err), http.StatusInternalServerError)
 		return
 	}
 
-	err = templ.Execute(w, loginTemplateData{URL: returnURL, Error: loginError})
+	buffer := bytes.Buffer{}
+	err = templ.Execute(&buffer, loginTemplateData{URL: returnURL, Error: loginError})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("error: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+
+	// we shouldn't need to set plugin exceptions here
+	setPageSecurityHeaders(w, r, nil)
+
+	utils.ServeStaticContent(w, r, buffer.Bytes())
+}
+
+func handleLoginLocale(cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// get the locale from the config
+		lang := cfg.GetLanguage()
+		if lang == "" {
+			lang = defaultLocale
+		}
+
+		data, err := getLoginLocale(lang)
+		if err != nil {
+			logger.Debugf("Failed to load login locale file for language %s: %v", lang, err)
+			// try again with the default language
+			if lang != defaultLocale {
+				data, err = getLoginLocale(defaultLocale)
+				if err != nil {
+					logger.Errorf("Failed to load login locale file for default language %s: %v", defaultLocale, err)
+				}
+			}
+
+			// if there's still an error, response with an internal server error
+			if err != nil {
+				http.Error(w, "Failed to load login locale file", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// write a script to set the locale string map as a global variable
+		localeScript := fmt.Sprintf("var localeStrings = %s;", data)
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write([]byte(localeScript))
 	}
 }
 
-func getLoginHandler(loginUIBox embed.FS) http.HandlerFunc {
+func getLoginLocale(lang string) ([]byte, error) {
+	data, err := fs.ReadFile(ui.LoginUIBox, "locales/"+lang+".json")
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func handleLogin() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		returnURL := r.URL.Query().Get(returnURLParam)
+
 		if !config.GetInstance().HasCredentials() {
-			http.Redirect(w, r, "/", http.StatusFound)
+			if returnURL != "" {
+				http.Redirect(w, r, returnURL, http.StatusFound)
+			} else {
+				prefix := getProxyPrefix(r)
+				http.Redirect(w, r, prefix+"/", http.StatusFound)
+			}
 			return
 		}
 
-		redirectToLogin(loginUIBox, w, r.URL.Query().Get(returnURLParam), "")
+		serveLoginPage(w, r, returnURL, "")
 	}
 }
 
-func handleLogin(loginUIBox embed.FS) http.HandlerFunc {
+func handleLoginPost() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		url := r.FormValue(returnURLParam)
-		if url == "" {
-			url = "/"
+		err := manager.GetInstance().SessionStore.Login(w, r)
+		if err != nil {
+			// always log the error
+			logger.Errorf("Error logging in: %v from IP: %s", err, r.RemoteAddr)
 		}
 
-		err := manager.GetInstance().SessionStore.Login(w, r)
-		if errors.Is(err, session.ErrInvalidCredentials) {
-			// redirect back to the login page with an error
-			redirectToLogin(loginUIBox, w, url, "Username or password is invalid")
+		var invalidCredentialsError *session.InvalidCredentialsError
+
+		if errors.As(err, &invalidCredentialsError) {
+			http.Error(w, "Username or password is invalid", http.StatusUnauthorized)
 			return
 		}
 
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			// don't expose the error to the user
+			http.Error(w, "An unexpected error occurred. See logs", http.StatusInternalServerError)
 			return
 		}
 
-		http.Redirect(w, r, url, http.StatusFound)
+		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func handleLogout(loginUIBox embed.FS) http.HandlerFunc {
+func handleLogout() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := manager.GetInstance().SessionStore.Logout(w, r); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -84,6 +154,11 @@ func handleLogout(loginUIBox embed.FS) http.HandlerFunc {
 		}
 
 		// redirect to the login page if credentials are required
-		getLoginHandler(loginUIBox)(w, r)
+		prefix := getProxyPrefix(r)
+		if config.GetInstance().HasCredentials() {
+			http.Redirect(w, r, prefix+loginEndpoint, http.StatusFound)
+		} else {
+			http.Redirect(w, r, prefix+"/", http.StatusFound)
+		}
 	}
 }

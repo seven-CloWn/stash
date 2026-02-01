@@ -1,3 +1,4 @@
+// Package txn provides functions for running transactions.
 package txn
 
 import (
@@ -6,7 +7,7 @@ import (
 )
 
 type Manager interface {
-	Begin(ctx context.Context) (context.Context, error)
+	Begin(ctx context.Context, writable bool) (context.Context, error)
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
 
@@ -17,51 +18,81 @@ type DatabaseProvider interface {
 	WithDatabase(ctx context.Context) (context.Context, error)
 }
 
+// TxnFunc is a function that is used in transaction hooks.
+// It should return an error if something went wrong.
 type TxnFunc func(ctx context.Context) error
+
+// MustFunc is a function that is used in transaction hooks.
+// It does not return an error.
+type MustFunc func(ctx context.Context)
 
 // WithTxn executes fn in a transaction. If fn returns an error then
 // the transaction is rolled back. Otherwise it is committed.
+// This function will call m.Begin with writable = true.
+// This function should be used for making changes to the database.
 func WithTxn(ctx context.Context, m Manager, fn TxnFunc) error {
-	const execComplete = true
-	return withTxn(ctx, m, fn, execComplete)
+	const (
+		execComplete = true
+		writable     = true
+	)
+	return withTxn(ctx, m, fn, writable, execComplete)
 }
 
-func withTxn(ctx context.Context, m Manager, fn TxnFunc, execCompleteOnLocked bool) error {
-	var err error
-	ctx, err = begin(ctx, m)
+// WithReadTxn executes fn in a transaction. If fn returns an error then
+// the transaction is rolled back. Otherwise it is committed.
+// This function will call m.Begin with writable = false.
+func WithReadTxn(ctx context.Context, m Manager, fn TxnFunc) error {
+	const (
+		execComplete = true
+		writable     = false
+	)
+	return withTxn(ctx, m, fn, writable, execComplete)
+}
+
+func withTxn(ctx context.Context, m Manager, fn TxnFunc, writable bool, execCompleteOnLocked bool) error {
+	// post-hooks should be executed with the outside context
+	txnCtx, err := begin(ctx, m, writable)
 	if err != nil {
 		return err
 	}
 
+	hookMgr := hookManagerCtx(txnCtx)
+
 	defer func() {
 		if p := recover(); p != nil {
 			// a panic occurred, rollback and repanic
-			rollback(ctx, m)
+			rollback(txnCtx, m)
 			panic(p)
 		}
 
 		if err != nil {
 			// something went wrong, rollback
-			rollback(ctx, m)
+			rollback(txnCtx, m)
+
+			// execute post-hooks with outside context
+			hookMgr.executePostRollbackHooks(ctx)
 
 			if execCompleteOnLocked || !m.IsLocked(err) {
-				executePostCompleteHooks(ctx)
+				hookMgr.executePostCompleteHooks(ctx)
 			}
 		} else {
 			// all good, commit
-			err = commit(ctx, m)
-			executePostCompleteHooks(ctx)
+			err = commit(txnCtx, m)
+
+			// execute post-hooks with outside context
+			hookMgr.executePostCommitHooks(ctx)
+			hookMgr.executePostCompleteHooks(ctx)
 		}
 
 	}()
 
-	err = fn(ctx)
+	err = fn(txnCtx)
 	return err
 }
 
-func begin(ctx context.Context, m Manager) (context.Context, error) {
+func begin(ctx context.Context, m Manager, writable bool) (context.Context, error) {
 	var err error
-	ctx, err = m.Begin(ctx)
+	ctx, err = m.Begin(ctx, writable)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +104,15 @@ func begin(ctx context.Context, m Manager) (context.Context, error) {
 }
 
 func commit(ctx context.Context, m Manager) error {
+	hookMgr := hookManagerCtx(ctx)
+	if err := hookMgr.executePreCommitHooks(ctx); err != nil {
+		return err
+	}
+
 	if err := m.Commit(ctx); err != nil {
 		return err
 	}
 
-	executePostCommitHooks(ctx)
 	return nil
 }
 
@@ -85,8 +120,6 @@ func rollback(ctx context.Context, m Manager) {
 	if err := m.Rollback(ctx); err != nil {
 		return
 	}
-
-	executePostRollbackHooks(ctx)
 }
 
 // WithDatabase executes fn with the context provided by p.WithDatabase.
@@ -102,6 +135,9 @@ func WithDatabase(ctx context.Context, p DatabaseProvider, fn TxnFunc) error {
 	return fn(ctx)
 }
 
+// Retryer is a provides WithTxn function that retries the transaction
+// if it fails with a locked database error.
+// Transactions are run in exclusive mode.
 type Retryer struct {
 	Manager Manager
 	// use value < 0 to retry forever
@@ -113,8 +149,11 @@ func (r Retryer) WithTxn(ctx context.Context, fn TxnFunc) error {
 	var attempt int
 	var err error
 	for attempt = 1; attempt <= r.Retries || r.Retries < 0; attempt++ {
-		const execComplete = false
-		err = withTxn(ctx, r.Manager, fn, execComplete)
+		const (
+			execComplete = false
+			exclusive    = true
+		)
+		err = withTxn(ctx, r.Manager, fn, exclusive, execComplete)
 
 		if err == nil {
 			return nil

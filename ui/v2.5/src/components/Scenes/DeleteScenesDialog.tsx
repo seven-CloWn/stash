@@ -2,9 +2,9 @@ import React, { useState } from "react";
 import { Form } from "react-bootstrap";
 import { useScenesDestroy } from "src/core/StashService";
 import * as GQL from "src/core/generated-graphql";
-import { Modal } from "src/components/Shared";
-import { useToast } from "src/hooks";
-import { ConfigurationContext } from "src/hooks/Config";
+import { ModalComponent } from "src/components/Shared/Modal";
+import { useToast } from "src/hooks/Toast";
+import { useConfigurationContext } from "src/hooks/Config";
 import { FormattedMessage, useIntl } from "react-intl";
 import { faTrashAlt } from "@fortawesome/free-solid-svg-icons";
 import { objectPath } from "src/core/files";
@@ -34,7 +34,7 @@ export const DeleteScenesDialog: React.FC<IDeleteSceneDialogProps> = (
     { count: props.selected.length, singularEntity, pluralEntity }
   );
 
-  const { configuration: config } = React.useContext(ConfigurationContext);
+  const { configuration: config } = useConfigurationContext();
 
   const [deleteFile, setDeleteFile] = useState<boolean>(
     config?.defaults.deleteFile ?? false
@@ -61,7 +61,7 @@ export const DeleteScenesDialog: React.FC<IDeleteSceneDialogProps> = (
     setIsDeleting(true);
     try {
       await deleteScene();
-      Toast.success({ content: toastMessage });
+      Toast.success(toastMessage);
       props.onClose(true);
     } catch (e) {
       Toast.error(e);
@@ -94,6 +94,11 @@ export const DeleteScenesDialog: React.FC<IDeleteSceneDialogProps> = (
       }
     });
 
+    const deleteTrashPath = config?.general.deleteTrashPath;
+    const deleteAlertId = deleteTrashPath
+      ? "dialogs.delete_alert_to_trash"
+      : "dialogs.delete_alert";
+
     return (
       <div className="delete-dialog alert alert-danger text-break">
         <p className="font-weight-bold">
@@ -103,7 +108,7 @@ export const DeleteScenesDialog: React.FC<IDeleteSceneDialogProps> = (
               singularEntity: intl.formatMessage({ id: "file" }),
               pluralEntity: intl.formatMessage({ id: "files" }),
             }}
-            id="dialogs.delete_alert"
+            id={deleteAlertId}
           />
         </p>
         <ul>
@@ -126,7 +131,7 @@ export const DeleteScenesDialog: React.FC<IDeleteSceneDialogProps> = (
   }
 
   return (
-    <Modal
+    <ModalComponent
       show
       icon={faTrashAlt}
       header={header}
@@ -162,7 +167,7 @@ export const DeleteScenesDialog: React.FC<IDeleteSceneDialogProps> = (
           onChange={() => setDeleteGenerated(!deleteGenerated)}
         />
       </Form>
-    </Modal>
+    </ModalComponent>
   );
 };
 

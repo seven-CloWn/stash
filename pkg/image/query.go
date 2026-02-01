@@ -11,7 +11,12 @@ type Queryer interface {
 	Query(ctx context.Context, options models.ImageQueryOptions) (*models.ImageQueryResult, error)
 }
 
-type CountQueryer interface {
+type CoverQueryer interface {
+	Queryer
+	CoverByGalleryID(ctx context.Context, galleryId int) (*models.Image, error)
+}
+
+type QueryCounter interface {
 	QueryCount(ctx context.Context, imageFilter *models.ImageFilterType, findFilter *models.FindFilterType) (int, error)
 }
 
@@ -41,7 +46,7 @@ func Query(ctx context.Context, qb Queryer, imageFilter *models.ImageFilterType,
 	return images, nil
 }
 
-func CountByPerformerID(ctx context.Context, r CountQueryer, id int) (int, error) {
+func CountByPerformerID(ctx context.Context, r QueryCounter, id int) (int, error) {
 	filter := &models.ImageFilterType{
 		Performers: &models.MultiCriterionInput{
 			Value:    []string{strconv.Itoa(id)},
@@ -52,22 +57,24 @@ func CountByPerformerID(ctx context.Context, r CountQueryer, id int) (int, error
 	return r.QueryCount(ctx, filter, nil)
 }
 
-func CountByStudioID(ctx context.Context, r CountQueryer, id int) (int, error) {
+func CountByStudioID(ctx context.Context, r QueryCounter, id int, depth *int) (int, error) {
 	filter := &models.ImageFilterType{
 		Studios: &models.HierarchicalMultiCriterionInput{
 			Value:    []string{strconv.Itoa(id)},
 			Modifier: models.CriterionModifierIncludes,
+			Depth:    depth,
 		},
 	}
 
 	return r.QueryCount(ctx, filter, nil)
 }
 
-func CountByTagID(ctx context.Context, r CountQueryer, id int) (int, error) {
+func CountByTagID(ctx context.Context, r QueryCounter, id int, depth *int) (int, error) {
 	filter := &models.ImageFilterType{
 		Tags: &models.HierarchicalMultiCriterionInput{
 			Value:    []string{strconv.Itoa(id)},
 			Modifier: models.CriterionModifierIncludes,
+			Depth:    depth,
 		},
 	}
 
@@ -95,4 +102,64 @@ func FindByGalleryID(ctx context.Context, r Queryer, galleryID int, sortBy strin
 			Modifier: models.CriterionModifierIncludes,
 		},
 	}, &findFilter)
+}
+
+func FindGalleryCover(ctx context.Context, r CoverQueryer, galleryID int, galleryCoverRegex string) (*models.Image, error) {
+	const useCoverJpg = true
+	img, err := findGalleryCover(ctx, r, galleryID, useCoverJpg, galleryCoverRegex)
+	if err != nil {
+		return nil, err
+	}
+
+	if img != nil {
+		return img, nil
+	}
+
+	// return the first image in the gallery
+	return findGalleryCover(ctx, r, galleryID, !useCoverJpg, galleryCoverRegex)
+}
+
+func findGalleryCover(ctx context.Context, r CoverQueryer, galleryID int, useCoverJpg bool, galleryCoverRegex string) (*models.Image, error) {
+	img, err := r.CoverByGalleryID(ctx, galleryID)
+	if err != nil {
+		return nil, err
+	} else if img != nil {
+		return img, nil
+	}
+
+	// try to find cover.jpg in the gallery
+	perPage := 1
+	sortBy := "path"
+	sortDir := models.SortDirectionEnumAsc
+
+	findFilter := models.FindFilterType{
+		PerPage:   &perPage,
+		Sort:      &sortBy,
+		Direction: &sortDir,
+	}
+
+	imageFilter := &models.ImageFilterType{
+		Galleries: &models.MultiCriterionInput{
+			Value:    []string{strconv.Itoa(galleryID)},
+			Modifier: models.CriterionModifierIncludes,
+		},
+	}
+
+	if useCoverJpg {
+		imageFilter.Path = &models.StringCriterionInput{
+			Value:    "(?i)" + galleryCoverRegex,
+			Modifier: models.CriterionModifierMatchesRegex,
+		}
+	}
+
+	imgs, err := Query(ctx, r, imageFilter, &findFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(imgs) > 0 {
+		return imgs[0], nil
+	}
+
+	return nil, nil
 }

@@ -4,9 +4,18 @@
 
 Setting the language affects the formatting of numbers and dates.
 
+## SFW Content Mode
+
+SFW Content Mode is used to indicate that the content being managed is _not_ adult content. 
+
+When SFW Content Mode is enabled, the following changes are made to the UI:
+- default performer images are changed to less adult-oriented images
+- certain adult-specific metadata fields are hidden (e.g. performer genital fields)
+- `O`-Counter is replaced with `Like`-counter
+
 ## Scene/Marker Wall Preview Type
 
-The Scene Wall and Marker pages display scene preview videos by default. This can be changed to animated image (webp) or static image. 
+The Scene Wall and Marker pages display scene preview videos (mp4) by default. This can be changed to animated image (webp) or static image. 
 
 > **⚠️ Note:** scene/marker preview videos must be generated to see them in the applicable wall page if Video preview type is selected. Likewise, if Animated Image is selected, then Image Previews must be generated.
 
@@ -20,11 +29,23 @@ By default, scene videos do not automatically start when navigating to the scene
 
 The maximum loop duration option allows looping of shorter videos. Set this value to the maximum scene duration that scene videos should loop. Setting this to 0 disables this functionality.
 
+### Activity tracking
+
+The "Track Activity" option allows tracking of scene play count and duration, and sets the resume point when a scene video is not finished.
+
+The "Minimum Play Percent" gives the minimum proportion of a video that must be played before the play count of the scene is incremented.
+
+By default, when a scene has a resume point, the scene player will automatically seek to this point when the scene is played. Setting "Always start video from beginning" to true disables this behaviour.
+
 ## Custom CSS
 
-The stash UI can be customised using custom CSS. See [here](https://github.com/stashapp/stash/wiki/Custom-CSS-snippets) for a community-curated set of CSS snippets to customise your UI. 
+The stash UI can be customised using custom CSS. See [here](https://docs.stashapp.cc/themes/custom-css-snippets/) for a community-curated set of CSS snippets to customise your UI. 
 
-[Stash Plex Theme](https://github.com/stashapp/stash/wiki/Theme-Plex) is a community created theme inspired by the popular Plex interface.
+There is also a [collection of community-created themes](https://docs.stashapp.cc/themes/list/#browse-themes) available.
+
+## Custom Javascript
+
+Stash supports the injection of custom javascript to assist with theming or adding additional functionality. Be aware that bad Javascript could break the UI or worse.
 
 ## Custom Locales
 

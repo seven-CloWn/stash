@@ -2,7 +2,8 @@ import React from "react";
 import { Button } from "react-bootstrap";
 import { useIntl } from "react-intl";
 import { useLatestVersion } from "src/core/StashService";
-import { ConstantSetting, Setting, SettingGroup } from "./Inputs";
+import { ExternalLink } from "../Shared/ExternalLink";
+import { ConstantSetting, SettingGroup } from "./Inputs";
 import { SettingSection } from "./SettingSection";
 
 export const SettingsAboutPanel: React.FC = () => {
@@ -20,7 +21,69 @@ export const SettingsAboutPanel: React.FC = () => {
     networkStatus,
   } = useLatestVersion();
 
-  const hasNew = dataLatest && gitHash !== dataLatest.latestversion.shorthash;
+  function renderLatestVersion() {
+    if (errorLatest) {
+      return (
+        <SettingGroup
+          settingProps={{
+            heading: errorLatest.message,
+          }}
+        />
+      );
+    } else if (!dataLatest || loadingLatest || networkStatus === 4) {
+      return (
+        <SettingGroup
+          settingProps={{
+            headingID: "loading.generic",
+          }}
+        />
+      );
+    } else {
+      let heading = dataLatest.latestversion.version;
+      const hashString = dataLatest.latestversion.shorthash;
+      if (gitHash !== hashString) {
+        heading +=
+          " " +
+          intl.formatMessage({
+            id: "config.about.new_version_notice",
+          });
+      }
+      return (
+        <SettingGroup
+          settingProps={{
+            heading,
+          }}
+        >
+          <div className="setting">
+            <div>
+              <h3>
+                {intl.formatMessage({
+                  id: "config.about.build_hash",
+                })}
+              </h3>
+              <div className="value">{hashString}</div>
+            </div>
+            <div>
+              <a href={dataLatest.latestversion.url}>
+                <Button>
+                  {intl.formatMessage({ id: "actions.download" })}
+                </Button>
+              </a>
+              <Button onClick={() => refetch()}>
+                {intl.formatMessage({
+                  id: "config.about.check_for_new_version",
+                })}
+              </Button>
+            </div>
+          </div>
+          <ConstantSetting
+            headingID="config.about.release_date"
+            value={dataLatest.latestversion.release_date}
+          />
+        </SettingGroup>
+      );
+    }
+  }
 
   return (
     <>
@@ -39,48 +102,10 @@ export const SettingsAboutPanel: React.FC = () => {
             value={buildTime}
           />
         </SettingGroup>
+      </SettingSection>
 
-        <SettingGroup
-          settingProps={{
-            headingID: "config.about.latest_version",
-          }}
-        >
-          {errorLatest ? (
-            <Setting heading={errorLatest.message} />
-          ) : !dataLatest || loadingLatest || networkStatus === 4 ? (
-            <Setting headingID="loading.generic" />
-          ) : (
-            <div className="setting">
-              <div>
-                <h3>
-                  {intl.formatMessage({
-                    id: "config.about.latest_version_build_hash",
-                  })}
-                </h3>
-                <div className="value">
-                  {dataLatest.latestversion.shorthash}{" "}
-                  {hasNew
-                    ? intl.formatMessage({
-                        id: "config.about.new_version_notice",
-                      })
-                    : undefined}
-                </div>
-              </div>
-              <div>
-                <a href={dataLatest.latestversion.url}>
-                  <Button>
-                    {intl.formatMessage({ id: "actions.download" })}
-                  </Button>
-                </a>
-                <Button onClick={() => refetch()}>
-                  {intl.formatMessage({
-                    id: "config.about.check_for_new_version",
-                  })}
-                </Button>
-              </div>
-            </div>
-          )}
-        </SettingGroup>
+      <SettingSection headingID="config.about.latest_version">
+        {renderLatestVersion()}
       </SettingSection>
 
       <SettingSection headingID="config.categories.about">
@@ -91,13 +116,9 @@ export const SettingsAboutPanel: React.FC = () => {
                 { id: "config.about.stash_home" },
                 {
                   url: (
-                    <a
-                      href="https://github.com/stashapp/stash"
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
+                    <ExternalLink href="https://github.com/stashapp/stash">
                       GitHub
-                    </a>
+                    </ExternalLink>
                   ),
                 }
               )}
@@ -107,13 +128,9 @@ export const SettingsAboutPanel: React.FC = () => {
                 { id: "config.about.stash_wiki" },
                 {
                   url: (
-                    <a
-                      href="https://github.com/stashapp/stash/wiki"
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
-                      Wiki
-                    </a>
+                    <ExternalLink href="https://docs.stashapp.cc">
+                      Documentation
+                    </ExternalLink>
                   ),
                 }
               )}
@@ -123,13 +140,9 @@ export const SettingsAboutPanel: React.FC = () => {
                 { id: "config.about.stash_discord" },
                 {
                   url: (
-                    <a
-                      href="https://discord.gg/2TsNFKt"
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
+                    <ExternalLink href="https://discord.gg/2TsNFKt">
                       Discord
-                    </a>
+                    </ExternalLink>
                   ),
                 }
               )}
@@ -139,13 +152,9 @@ export const SettingsAboutPanel: React.FC = () => {
                 { id: "config.about.stash_open_collective" },
                 {
                   url: (
-                    <a
-                      href="https://opencollective.com/stashapp"
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
+                    <ExternalLink href="https://opencollective.com/stashapp">
                       Open Collective
-                    </a>
+                    </ExternalLink>
                   ),
                 }
               )}

@@ -1,8 +1,6 @@
 package tag
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 
 	"github.com/stashapp/stash/pkg/models"
@@ -26,6 +24,7 @@ const (
 
 const (
 	tagName     = "testTag"
+	sortName    = "sortName"
 	description = "description"
 )
 
@@ -37,25 +36,22 @@ var (
 
 func createTag(id int) models.Tag {
 	return models.Tag{
-		ID:   id,
-		Name: tagName,
-		Description: sql.NullString{
-			String: description,
-			Valid:  true,
-		},
+		ID:            id,
+		Name:          tagName,
+		SortName:      sortName,
+		Favorite:      true,
+		Description:   description,
 		IgnoreAutoTag: autoTagIgnored,
-		CreatedAt: models.SQLiteTimestamp{
-			Timestamp: createTime,
-		},
-		UpdatedAt: models.SQLiteTimestamp{
-			Timestamp: updateTime,
-		},
+		CreatedAt:     createTime,
+		UpdatedAt:     updateTime,
 	}
 }
 
 func createJSONTag(aliases []string, image string, parents []string) *jsonschema.Tag {
 	return &jsonschema.Tag{
 		Name:          tagName,
+		SortName:      sortName,
+		Favorite:      true,
 		Description:   description,
 		Aliases:       aliases,
 		IgnoreAutoTag: autoTagIgnored,
@@ -92,8 +88,9 @@ func initTestTable() {
 		},
 		{
 			createTag(errImageID),
-			nil,
-			true,
+			createJSONTag(nil, "", nil),
+			// getting the image should not cause an error
+			false,
 		},
 		{
 			createTag(errAliasID),
@@ -116,34 +113,41 @@ func initTestTable() {
 func TestToJSON(t *testing.T) {
 	initTestTable()
 
-	ctx := context.Background()
-	mockTagReader := &mocks.TagReaderWriter{}
+	db := mocks.NewDatabase()
 
 	imageErr := errors.New("error getting image")
 	aliasErr := errors.New("error getting aliases")
 	parentsErr := errors.New("error getting parents")
 
-	mockTagReader.On("GetAliases", ctx, tagID).Return([]string{"alias"}, nil).Once()
-	mockTagReader.On("GetAliases", ctx, noImageID).Return(nil, nil).Once()
-	mockTagReader.On("GetAliases", ctx, errImageID).Return(nil, nil).Once()
-	mockTagReader.On("GetAliases", ctx, errAliasID).Return(nil, aliasErr).Once()
-	mockTagReader.On("GetAliases", ctx, withParentsID).Return(nil, nil).Once()
-	mockTagReader.On("GetAliases", ctx, errParentsID).Return(nil, nil).Once()
+	db.Tag.On("GetAliases", testCtx, tagID).Return([]string{"alias"}, nil).Once()
+	db.Tag.On("GetAliases", testCtx, noImageID).Return(nil, nil).Once()
+	db.Tag.On("GetAliases", testCtx, errImageID).Return(nil, nil).Once()
+	db.Tag.On("GetAliases", testCtx, errAliasID).Return(nil, aliasErr).Once()
+	db.Tag.On("GetAliases", testCtx, withParentsID).Return(nil, nil).Once()
+	db.Tag.On("GetAliases", testCtx, errParentsID).Return(nil, nil).Once()
 
-	mockTagReader.On("GetImage", ctx, tagID).Return(imageBytes, nil).Once()
-	mockTagReader.On("GetImage", ctx, noImageID).Return(nil, nil).Once()
-	mockTagReader.On("GetImage", ctx, errImageID).Return(nil, imageErr).Once()
-	mockTagReader.On("GetImage", ctx, withParentsID).Return(imageBytes, nil).Once()
-	mockTagReader.On("GetImage", ctx, errParentsID).Return(nil, nil).Once()
+	db.Tag.On("GetStashIDs", testCtx, tagID).Return(nil, nil).Once()
+	db.Tag.On("GetStashIDs", testCtx, noImageID).Return(nil, nil).Once()
+	db.Tag.On("GetStashIDs", testCtx, errImageID).Return(nil, nil).Once()
+	// errAliasID test fails before GetStashIDs is called, so no mock needed
+	db.Tag.On("GetStashIDs", testCtx, withParentsID).Return(nil, nil).Once()
+	db.Tag.On("GetStashIDs", testCtx, errParentsID).Return(nil, nil).Once()
 
-	mockTagReader.On("FindByChildTagID", ctx, tagID).Return(nil, nil).Once()
-	mockTagReader.On("FindByChildTagID", ctx, noImageID).Return(nil, nil).Once()
-	mockTagReader.On("FindByChildTagID", ctx, withParentsID).Return([]*models.Tag{{Name: "parent"}}, nil).Once()
-	mockTagReader.On("FindByChildTagID", ctx, errParentsID).Return(nil, parentsErr).Once()
+	db.Tag.On("GetImage", testCtx, tagID).Return(imageBytes, nil).Once()
+	db.Tag.On("GetImage", testCtx, noImageID).Return(nil, nil).Once()
+	db.Tag.On("GetImage", testCtx, errImageID).Return(nil, imageErr).Once()
+	db.Tag.On("GetImage", testCtx, withParentsID).Return(imageBytes, nil).Once()
+	db.Tag.On("GetImage", testCtx, errParentsID).Return(nil, nil).Once()
+
+	db.Tag.On("FindByChildTagID", testCtx, tagID).Return(nil, nil).Once()
+	db.Tag.On("FindByChildTagID", testCtx, noImageID).Return(nil, nil).Once()
+	db.Tag.On("FindByChildTagID", testCtx, withParentsID).Return([]*models.Tag{{Name: "parent"}}, nil).Once()
+	db.Tag.On("FindByChildTagID", testCtx, errParentsID).Return(nil, parentsErr).Once()
+	db.Tag.On("FindByChildTagID", testCtx, errImageID).Return(nil, nil).Once()
 
 	for i, s := range scenarios {
 		tag := s.tag
-		json, err := ToJSON(ctx, mockTagReader, &tag)
+		json, err := ToJSON(testCtx, db.Tag, &tag)
 
 		switch {
 		case !s.err && err != nil:
@@ -155,5 +159,5 @@ func TestToJSON(t *testing.T) {
 		}
 	}
 
-	mockTagReader.AssertExpectations(t)
+	db.AssertExpectations(t)
 }

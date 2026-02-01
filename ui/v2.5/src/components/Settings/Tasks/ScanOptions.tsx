@@ -12,11 +12,15 @@ export const ScanOptions: React.FC<IScanOptions> = ({
   setOptions: setOptionsState,
 }) => {
   const {
+    scanGenerateCovers,
     scanGeneratePreviews,
     scanGenerateImagePreviews,
     scanGenerateSprites,
     scanGeneratePhashes,
     scanGenerateThumbnails,
+    scanGenerateImagePhashes,
+    scanGenerateClipPreviews,
+    rescan,
   } = options;
 
   function setOptions(input: Partial<GQL.ScanMetadataInput>) {
@@ -26,6 +30,12 @@ export const ScanOptions: React.FC<IScanOptions> = ({
   return (
     <>
       <BooleanSetting
+        id="scan-generate-covers"
+        headingID="config.tasks.generate_video_covers_during_scan"
+        checked={scanGenerateCovers ?? true}
+        onChange={(v) => setOptions({ scanGenerateCovers: v })}
+      />
+      <BooleanSetting
         id="scan-generate-previews"
         headingID="config.tasks.generate_video_previews_during_scan"
         tooltipID="config.tasks.generate_video_previews_during_scan_tooltip"
@@ -33,6 +43,7 @@ export const ScanOptions: React.FC<IScanOptions> = ({
         onChange={(v) => setOptions({ scanGeneratePreviews: v })}
       />
       <BooleanSetting
+        advanced
         id="scan-generate-image-previews"
         className="sub-setting"
         headingID="config.tasks.generate_previews_during_scan"
@@ -45,6 +56,7 @@ export const ScanOptions: React.FC<IScanOptions> = ({
       <BooleanSetting
         id="scan-generate-sprites"
         headingID="config.tasks.generate_sprites_during_scan"
+        tooltipID="config.tasks.generate_sprites_during_scan_tooltip"
         checked={scanGenerateSprites ?? false}
         onChange={(v) => setOptions({ scanGenerateSprites: v })}
       />
@@ -60,6 +72,26 @@ export const ScanOptions: React.FC<IScanOptions> = ({
         checked={scanGenerateThumbnails ?? false}
         headingID="config.tasks.generate_thumbnails_during_scan"
         onChange={(v) => setOptions({ scanGenerateThumbnails: v })}
+      />
+      <BooleanSetting
+        id="scan-generate-image-phashes"
+        checked={scanGenerateImagePhashes ?? false}
+        headingID="config.tasks.generate_image_phashes_during_scan"
+        tooltipID="config.tasks.generate_image_phashes_during_scan_tooltip"
+        onChange={(v) => setOptions({ scanGenerateImagePhashes: v })}
+      />
+      <BooleanSetting
+        id="scan-generate-clip-previews"
+        checked={scanGenerateClipPreviews ?? false}
+        headingID="config.tasks.generate_clip_previews_during_scan"
+        onChange={(v) => setOptions({ scanGenerateClipPreviews: v })}
+      />
+      <BooleanSetting
+        id="force-rescan"
+        headingID="config.tasks.rescan"
+        tooltipID="config.tasks.rescan_tooltip"
+        checked={rescan ?? false}
+        onChange={(v) => setOptions({ rescan: v })}
       />
     </>
   );

@@ -1,27 +1,34 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Form, Button } from "react-bootstrap";
 import { mutateMetadataGenerate } from "src/core/StashService";
-import { Modal, Icon } from "src/components/Shared";
-import { useToast } from "src/hooks";
+import { ModalComponent } from "../Shared/Modal";
+import { Icon } from "src/components/Shared/Icon";
+import { useToast } from "src/hooks/Toast";
 import * as GQL from "src/core/generated-graphql";
 import { FormattedMessage, useIntl } from "react-intl";
-import { ConfigurationContext } from "src/hooks/Config";
+import { useConfigurationContext } from "src/hooks/Config";
 import { Manual } from "../Help/Manual";
-import { withoutTypename } from "src/utils";
+import { withoutTypename } from "src/utils/data";
 import { GenerateOptions } from "../Settings/Tasks/GenerateOptions";
 import { SettingSection } from "../Settings/SettingSection";
 import { faCogs, faQuestionCircle } from "@fortawesome/free-solid-svg-icons";
+import { SettingsContext } from "../Settings/context";
 
 interface ISceneGenerateDialog {
   selectedIds?: string[];
   onClose: () => void;
+  type: "scene" | "image";
 }
 
 export const GenerateDialog: React.FC<ISceneGenerateDialog> = ({
   selectedIds,
   onClose,
+  type,
 }) => {
-  const { configuration } = React.useContext(ConfigurationContext);
+  const sceneIDs = type === "scene" ? selectedIds : undefined;
+  const imageIDs = type === "image" ? selectedIds : undefined;
+
+  const { configuration } = useConfigurationContext();
 
   function getDefaultOptions(): GQL.GenerateMetadataInput {
     return {
@@ -137,14 +144,15 @@ export const GenerateDialog: React.FC<ISceneGenerateDialog> = ({
     try {
       await mutateMetadataGenerate({
         ...options,
-        sceneIDs: selectedIds,
+        sceneIDs,
+        imageIDs,
       });
-      Toast.success({
-        content: intl.formatMessage(
+      Toast.success(
+        intl.formatMessage(
           { id: "config.tasks.added_job_to_queue" },
           { operation_name: intl.formatMessage({ id: "actions.generate" }) }
-        ),
-      });
+        )
+      );
     } catch (e) {
       Toast.error(e);
     } finally {
@@ -169,7 +177,7 @@ export const GenerateDialog: React.FC<ISceneGenerateDialog> = ({
   }
 
   return (
-    <Modal
+    <ModalComponent
       show
       modalProps={{ animation, size: "lg" }}
       icon={faCogs}
@@ -195,15 +203,18 @@ export const GenerateDialog: React.FC<ISceneGenerateDialog> = ({
     >
       <Form>
         {selectionStatus}
-        <SettingSection>
-          <GenerateOptions
-            options={options}
-            setOptions={setOptions}
-            selection
-          />
-        </SettingSection>
+        <SettingsContext>
+          <SettingSection>
+            <GenerateOptions
+              type={type}
+              options={options}
+              setOptions={setOptions}
+              selection
+            />
+          </SettingSection>
+        </SettingsContext>
       </Form>
-    </Modal>
+    </ModalComponent>
   );
 };
 

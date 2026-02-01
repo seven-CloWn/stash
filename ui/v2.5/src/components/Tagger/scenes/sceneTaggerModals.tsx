@@ -6,27 +6,36 @@ import PerformerModal from "../PerformerModal";
 import { TaggerStateContext } from "../context";
 import { useIntl } from "react-intl";
 import { faTags } from "@fortawesome/free-solid-svg-icons";
+import { CreateLinkTagDialog } from "src/components/Shared/ScrapeDialog/CreateLinkTagDialog";
 
 type PerformerModalCallback = (toCreate?: GQL.PerformerCreateInput) => void;
-type StudioModalCallback = (toCreate?: GQL.StudioCreateInput) => void;
+type StudioModalCallback = (
+  toCreate?: GQL.StudioCreateInput,
+  parentInput?: GQL.StudioCreateInput
+) => void;
+type TagModalCallback = (result: {
+  create?: GQL.TagCreateInput;
+  update?: GQL.TagUpdateInput;
+}) => void;
 
 export interface ISceneTaggerModalsContextState {
   createPerformerModal: (
     performer: GQL.ScrapedPerformerDataFragment,
-    callback: (toCreate?: GQL.PerformerCreateInput) => void
+    callback: PerformerModalCallback
   ) => void;
   createStudioModal: (
     studio: GQL.ScrapedSceneStudioDataFragment,
-    callback: (toCreate?: GQL.StudioCreateInput) => void
+    callback: StudioModalCallback
   ) => void;
+  createTagModal: (tag: GQL.ScrapedTag, callback: TagModalCallback) => void;
 }
 
-export const SceneTaggerModalsState = React.createContext<ISceneTaggerModalsContextState>(
-  {
+export const SceneTaggerModalsState =
+  React.createContext<ISceneTaggerModalsContextState>({
     createPerformerModal: () => {},
     createStudioModal: () => {},
-  }
-);
+    createTagModal: () => {},
+  });
 
 export const SceneTaggerModals: React.FC = ({ children }) => {
   const { currentSource } = useContext(TaggerStateContext);
@@ -43,6 +52,15 @@ export const SceneTaggerModals: React.FC = ({ children }) => {
   >();
   const [studioCallback, setStudioCallback] = useState<
     StudioModalCallback | undefined
+  >();
+
+  const [tagToCreate, setTagToCreate] = useState<GQL.ScrapedTag | undefined>();
+  const [tagCallback, setTagCallback] = useState<
+    | ((result: {
+        create?: GQL.TagCreateInput;
+        update?: GQL.TagUpdateInput;
+      }) => void)
+    | undefined
   >();
 
   const intl = useIntl();
@@ -74,9 +92,12 @@ export const SceneTaggerModals: React.FC = ({ children }) => {
     setPerformerCallback(() => callback);
   }
 
-  function handleStudioSave(toCreate: GQL.StudioCreateInput) {
+  function handleStudioSave(
+    toCreate: GQL.StudioCreateInput,
+    parentInput?: GQL.StudioCreateInput
+  ) {
     if (studioCallback) {
-      studioCallback(toCreate);
+      studioCallback(toCreate, parentInput);
     }
 
     setStudioToCreate(undefined);
@@ -101,11 +122,28 @@ export const SceneTaggerModals: React.FC = ({ children }) => {
     setStudioCallback(() => callback);
   }
 
-  const endpoint = currentSource?.stashboxEndpoint;
+  function handleTagSave(result: {
+    create?: GQL.TagCreateInput;
+    update?: GQL.TagUpdateInput;
+  }) {
+    if (tagCallback) {
+      tagCallback(result);
+    }
+
+    setTagToCreate(undefined);
+    setTagCallback(undefined);
+  }
+
+  function createTagModal(tag: GQL.ScrapedTag, callback: TagModalCallback) {
+    setTagToCreate(tag);
+    setTagCallback(() => callback);
+  }
+
+  const endpoint = currentSource?.sourceInput.stash_box_endpoint ?? undefined;
 
   return (
     <SceneTaggerModalsState.Provider
-      value={{ createPerformerModal, createStudioModal }}
+      value={{ createPerformerModal, createStudioModal, createTagModal }}
     >
       {performerToCreate && (
         <PerformerModal
@@ -133,6 +171,14 @@ export const SceneTaggerModals: React.FC = ({ children }) => {
             { id: "actions.create_entity" },
             { entityType: intl.formatMessage({ id: "studio" }) }
           )}
+          endpoint={endpoint}
+        />
+      )}
+      {tagToCreate && (
+        <CreateLinkTagDialog
+          tag={tagToCreate}
+          onClose={handleTagSave}
+          endpoint={endpoint}
         />
       )}
       {children}

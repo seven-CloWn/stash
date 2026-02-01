@@ -13,8 +13,13 @@ fragment ImageFragment on Image {
 fragment StudioFragment on Studio {
   name
   id
+  aliases
   urls {
     ...URLFragment
+  }
+  parent {
+    name
+    id
   }
   images {
     ...ImageFragment
@@ -24,11 +29,6 @@ fragment StudioFragment on Studio {
 fragment TagFragment on Tag {
   name
   id
-}
-
-fragment FuzzyDateFragment on FuzzyDate {
-  date
-  accuracy
 }
 
 fragment MeasurementsFragment on Measurements {
@@ -50,15 +50,16 @@ fragment PerformerFragment on Performer {
   aliases
   gender
   merged_ids
+  deleted
+  merged_into_id
   urls {
     ...URLFragment
   }
   images {
     ...ImageFragment
   }
-  birthdate {
-    ...FuzzyDateFragment
-  }
+  birth_date
+  death_date
   ethnicity
   country
   eye_color
@@ -94,7 +95,9 @@ fragment FingerprintFragment on Fingerprint {
 fragment SceneFragment on Scene {
   id
   title
+  code
   details
+  director
   duration
   date
   urls {
@@ -129,7 +132,9 @@ query FindScenesByFullFingerprints($fingerprints: [FingerprintQueryInput!]!) {
   }
 }
 
-query FindScenesBySceneFingerprints($fingerprints: [[FingerprintQueryInput!]!]!) {
+query FindScenesBySceneFingerprints(
+  $fingerprints: [[FingerprintQueryInput!]!]!
+) {
   findScenesBySceneFingerprints(fingerprints: $fingerprints) {
     ...SceneFragment
   }
@@ -156,6 +161,27 @@ query FindPerformerByID($id: ID!) {
 query FindSceneByID($id: ID!) {
   findScene(id: $id) {
     ...SceneFragment
+  }
+}
+
+query FindStudio($id: ID, $name: String) {
+  findStudio(id: $id, name: $name) {
+    ...StudioFragment
+  }
+}
+
+query FindTag($id: ID, $name: String) {
+  findTag(id: $id, name: $name) {
+    ...TagFragment
+  }
+}
+
+query QueryTags($input: TagQueryInput!) {
+  queryTags(input: $input) {
+    count
+    tags {
+      ...TagFragment
+    }
   }
 }
 

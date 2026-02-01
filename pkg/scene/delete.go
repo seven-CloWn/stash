@@ -7,6 +7,7 @@ import (
 	"github.com/stashapp/stash/pkg/file"
 	"github.com/stashapp/stash/pkg/file/video"
 	"github.com/stashapp/stash/pkg/fsutil"
+	"github.com/stashapp/stash/pkg/logger"
 	"github.com/stashapp/stash/pkg/models"
 	"github.com/stashapp/stash/pkg/models/paths"
 )
@@ -20,6 +21,7 @@ type FileDeleter struct {
 }
 
 // MarkGeneratedFiles marks for deletion the generated files for the provided scene.
+// Generated files bypass trash and are permanently deleted since they can be regenerated.
 func (d *FileDeleter) MarkGeneratedFiles(scene *models.Scene) error {
 	sceneHash := scene.GetHash(d.FileNamingAlgo)
 
@@ -31,24 +33,12 @@ func (d *FileDeleter) MarkGeneratedFiles(scene *models.Scene) error {
 
 	exists, _ := fsutil.FileExists(markersFolder)
 	if exists {
-		if err := d.Dirs([]string{markersFolder}); err != nil {
+		if err := d.DirsWithoutTrash([]string{markersFolder}); err != nil {
 			return err
 		}
 	}
 
 	var files []string
-
-	thumbPath := d.Paths.Scene.GetThumbnailScreenshotPath(sceneHash)
-	exists, _ = fsutil.FileExists(thumbPath)
-	if exists {
-		files = append(files, thumbPath)
-	}
-
-	normalPath := d.Paths.Scene.GetScreenshotPath(sceneHash)
-	exists, _ = fsutil.FileExists(normalPath)
-	if exists {
-		files = append(files, normalPath)
-	}
 
 	streamPreviewPath := d.Paths.Scene.GetVideoPreviewPath(sceneHash)
 	exists, _ = fsutil.FileExists(streamPreviewPath)
@@ -86,11 +76,12 @@ func (d *FileDeleter) MarkGeneratedFiles(scene *models.Scene) error {
 		files = append(files, heatmapPath)
 	}
 
-	return d.Files(files)
+	return d.FilesWithoutTrash(files)
 }
 
 // MarkMarkerFiles deletes generated files for a scene marker with the
 // provided scene and timestamp.
+// Generated files bypass trash and are permanently deleted since they can be regenerated.
 func (d *FileDeleter) MarkMarkerFiles(scene *models.Scene, seconds int) error {
 	videoPath := d.Paths.SceneMarkers.GetVideoPreviewPath(scene.GetHash(d.FileNamingAlgo), seconds)
 	imagePath := d.Paths.SceneMarkers.GetWebpPreviewPath(scene.GetHash(d.FileNamingAlgo), seconds)
@@ -113,22 +104,13 @@ func (d *FileDeleter) MarkMarkerFiles(scene *models.Scene, seconds int) error {
 		files = append(files, screenshotPath)
 	}
 
-	return d.Files(files)
-}
-
-type Destroyer interface {
-	Destroy(ctx context.Context, id int) error
-}
-
-type MarkerDestroyer interface {
-	FindBySceneID(ctx context.Context, sceneID int) ([]*models.SceneMarker, error)
-	Destroy(ctx context.Context, id int) error
+	return d.FilesWithoutTrash(files)
 }
 
 // Destroy deletes a scene and its associated relationships from the
 // database.
-func (s *Service) Destroy(ctx context.Context, scene *models.Scene, fileDeleter *FileDeleter, deleteGenerated, deleteFile bool) error {
-	mqb := s.MarkerDestroyer
+func (s *Service) Destroy(ctx context.Context, scene *models.Scene, fileDeleter *FileDeleter, deleteGenerated, deleteFile, destroyFileEntry bool) error {
+	mqb := s.MarkerRepository
 	markers, err := mqb.FindBySceneID(ctx, scene.ID)
 	if err != nil {
 		return err
@@ -142,6 +124,10 @@ func (s *Service) Destroy(ctx context.Context, scene *models.Scene, fileDeleter 
 
 	if deleteFile {
 		if err := s.deleteFiles(ctx, scene, fileDeleter); err != nil {
+			return err
+		}
+	} else if destroyFileEntry {
+		if err := s.destroyFileEntries(ctx, scene); err != nil {
 			return err
 		}
 	}
@@ -178,6 +164,7 @@ func (s *Service) deleteFiles(ctx context.Context, scene *models.Scene, fileDele
 		}
 
 		const deleteFile = true
+		logger.Info("Deleting scene file: ", f.Path)
 		if err := file.Destroy(ctx, s.File, f, fileDeleter.Deleter, deleteFile); err != nil {
 			return err
 		}
@@ -197,10 +184,39 @@ func (s *Service) deleteFiles(ctx context.Context, scene *models.Scene, fileDele
 	return nil
 }
 
+// destroyFileEntries destroys file entries from the database without deleting
+// the files from the filesystem
+func (s *Service) destroyFileEntries(ctx context.Context, scene *models.Scene) error {
+	if err := scene.LoadFiles(ctx, s.Repository); err != nil {
+		return err
+	}
+
+	for _, f := range scene.Files.List() {
+		// only destroy file entries where there is no other associated scene
+		otherScenes, err := s.Repository.FindByFileID(ctx, f.ID)
+		if err != nil {
+			return err
+		}
+
+		if len(otherScenes) > 1 {
+			// other scenes associated, don't remove
+			continue
+		}
+
+		const deleteFile = false
+		logger.Info("Destroying scene file entry: ", f.Path)
+		if err := file.Destroy(ctx, s.File, f, nil, deleteFile); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // DestroyMarker deletes the scene marker from the database and returns a
 // function that removes the generated files, to be executed after the
 // transaction is successfully committed.
-func DestroyMarker(ctx context.Context, scene *models.Scene, sceneMarker *models.SceneMarker, qb MarkerDestroyer, fileDeleter *FileDeleter) error {
+func DestroyMarker(ctx context.Context, scene *models.Scene, sceneMarker *models.SceneMarker, qb models.SceneMarkerDestroyer, fileDeleter *FileDeleter) error {
 	if err := qb.Destroy(ctx, sceneMarker.ID); err != nil {
 		return err
 	}

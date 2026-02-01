@@ -1,10 +1,10 @@
-# External Plugins
+# External Plugin Tasks
 
-External plugins are executed by running an external binary.
+External plugin tasks are executed by running an external binary.
 
 ## Plugin interfaces
 
-Stash communicates with external plugins using an interface. Stash currently supports RPC and raw interface types.
+Stash communicates with external plugin tasks using an interface. Stash currently supports RPC and raw interface types.
 
 ### RPC interface
 
@@ -28,29 +28,11 @@ External plugins may log to the stash server by writing to stderr. By default, d
 
 Plugins can log for specific levels or log progress by prefixing the output string with special control characters. See `pkg/plugin/common/log` for how this is done in go.
 
-# Plugin configuration file format
+## Plugin configuration file format
 
-The basic structure of an external plugin configuration file is as follows:
+### exec
 
-```
-name: <plugin name>
-description: <optional description of the plugin>
-version: <optional version tag>
-url: <optional url>
-exec:
-  - <binary name>
-  - <other args...>
-interface: [interface type]
-errLog: [one of none trace, debug, info, warning, error]
-tasks:
-  - ...
-```
-
-The `name`, `description`, `version` and `url` fields are displayed on the plugins page.
-
-## exec
-
-For external plugins, the `exec` field is a list with the first element being the binary that will be executed, and the subsequent elements are the arguments passed. The execution process will search the path for the binary, then will attempt to find the program in the same directory as the plugin configuration file. The `exe` extension is not necessary on Windows systems. 
+For external plugin tasks, the `exec` field is a list with the first element being the binary that will be executed, and the subsequent elements are the arguments passed. The execution process will search the path for the binary, then will attempt to find the program in the same directory as the plugin configuration file. The `exe` extension is not necessary on Windows systems. 
 
 > **⚠️ Note:** The plugin execution process sets the current working directory to that of the stash process.
 
@@ -73,9 +55,9 @@ exec:
   - {pluginDir}/foo.py
 ```
 
-## interface
+### interface
 
-For external plugins, the `interface` field must be set to one of the following values:
+For external plugin tasks, the `interface` field must be set to one of the following values:
 * `rpc`
 * `raw`
 
@@ -83,13 +65,13 @@ See the `Plugin interfaces` section above for details on these interface types.
 
 The `interface` field defaults to `raw` if not provided.
 
-## errLog
+### errLog
 
 The `errLog` field tells stash what the default log level should be when the plugin outputs to stderr without encoding a log level. It defaults to the `error` level if no provided. This field is not necessary if the plugin outputs logging with the appropriate encoding. See the `Logging` section above for details.
 
-# Task configuration
+## Task configuration
 
-In addition to the standard task configuration, external tags may be configured with an optional `execArgs` field to add extra parameters to the execution arguments for the task.
+In addition to the standard task configuration, external tasks may be configured with an optional `execArgs` field to add extra parameters to the execution arguments for the task.
 
 For example:
 

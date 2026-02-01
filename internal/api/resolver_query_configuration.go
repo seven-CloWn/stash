@@ -9,7 +9,6 @@ import (
 	"github.com/stashapp/stash/internal/manager/config"
 	"github.com/stashapp/stash/pkg/fsutil"
 	"github.com/stashapp/stash/pkg/models"
-	"github.com/stashapp/stash/pkg/scraper/stashbox"
 	"golang.org/x/text/collate"
 )
 
@@ -50,7 +49,7 @@ func getDir(path string) string {
 }
 
 func getParent(path string) *string {
-	isRoot := path[len(path)-1:] == "/"
+	isRoot := path == "/"
 	if isRoot {
 		return nil
 	} else {
@@ -79,50 +78,61 @@ func makeConfigGeneralResult() *ConfigGeneralResult {
 
 	customPerformerImageLocation := config.GetCustomPerformerImageLocation()
 
-	scraperUserAgent := config.GetScraperUserAgent()
-	scraperCDPPath := config.GetScraperCDPPath()
-
 	return &ConfigGeneralResult{
-		Stashes:                      config.GetStashPaths(),
-		DatabasePath:                 config.GetDatabasePath(),
-		BackupDirectoryPath:          config.GetBackupDirectoryPath(),
-		GeneratedPath:                config.GetGeneratedPath(),
-		MetadataPath:                 config.GetMetadataPath(),
-		ConfigFilePath:               config.GetConfigFile(),
-		ScrapersPath:                 config.GetScrapersPath(),
-		CachePath:                    config.GetCachePath(),
-		CalculateMd5:                 config.IsCalculateMD5(),
-		VideoFileNamingAlgorithm:     config.GetVideoFileNamingAlgorithm(),
-		ParallelTasks:                config.GetParallelTasks(),
-		PreviewAudio:                 config.GetPreviewAudio(),
-		PreviewSegments:              config.GetPreviewSegments(),
-		PreviewSegmentDuration:       config.GetPreviewSegmentDuration(),
-		PreviewExcludeStart:          config.GetPreviewExcludeStart(),
-		PreviewExcludeEnd:            config.GetPreviewExcludeEnd(),
-		PreviewPreset:                config.GetPreviewPreset(),
-		MaxTranscodeSize:             &maxTranscodeSize,
-		MaxStreamingTranscodeSize:    &maxStreamingTranscodeSize,
-		WriteImageThumbnails:         config.IsWriteImageThumbnails(),
-		APIKey:                       config.GetAPIKey(),
-		Username:                     config.GetUsername(),
-		Password:                     config.GetPasswordHash(),
-		MaxSessionAge:                config.GetMaxSessionAge(),
-		LogFile:                      &logFile,
-		LogOut:                       config.GetLogOut(),
-		LogLevel:                     config.GetLogLevel(),
-		LogAccess:                    config.GetLogAccess(),
-		VideoExtensions:              config.GetVideoExtensions(),
-		ImageExtensions:              config.GetImageExtensions(),
-		GalleryExtensions:            config.GetGalleryExtensions(),
-		CreateGalleriesFromFolders:   config.GetCreateGalleriesFromFolders(),
-		Excludes:                     config.GetExcludes(),
-		ImageExcludes:                config.GetImageExcludes(),
-		CustomPerformerImageLocation: &customPerformerImageLocation,
-		ScraperUserAgent:             &scraperUserAgent,
-		ScraperCertCheck:             config.GetScraperCertCheck(),
-		ScraperCDPPath:               &scraperCDPPath,
-		StashBoxes:                   config.GetStashBoxes(),
-		PythonPath:                   config.GetPythonPath(),
+		Stashes:                       config.GetStashPaths(),
+		DatabasePath:                  config.GetDatabasePath(),
+		BackupDirectoryPath:           config.GetBackupDirectoryPath(),
+		DeleteTrashPath:               config.GetDeleteTrashPath(),
+		GeneratedPath:                 config.GetGeneratedPath(),
+		MetadataPath:                  config.GetMetadataPath(),
+		ConfigFilePath:                config.GetConfigFile(),
+		ScrapersPath:                  config.GetScrapersPath(),
+		PluginsPath:                   config.GetPluginsPath(),
+		CachePath:                     config.GetCachePath(),
+		BlobsPath:                     config.GetBlobsPath(),
+		BlobsStorage:                  config.GetBlobsStorage(),
+		FfmpegPath:                    config.GetFFMpegPath(),
+		FfprobePath:                   config.GetFFProbePath(),
+		CalculateMd5:                  config.IsCalculateMD5(),
+		VideoFileNamingAlgorithm:      config.GetVideoFileNamingAlgorithm(),
+		ParallelTasks:                 config.GetParallelTasks(),
+		PreviewAudio:                  config.GetPreviewAudio(),
+		PreviewSegments:               config.GetPreviewSegments(),
+		PreviewSegmentDuration:        config.GetPreviewSegmentDuration(),
+		PreviewExcludeStart:           config.GetPreviewExcludeStart(),
+		PreviewExcludeEnd:             config.GetPreviewExcludeEnd(),
+		PreviewPreset:                 config.GetPreviewPreset(),
+		TranscodeHardwareAcceleration: config.GetTranscodeHardwareAcceleration(),
+		MaxTranscodeSize:              &maxTranscodeSize,
+		MaxStreamingTranscodeSize:     &maxStreamingTranscodeSize,
+		WriteImageThumbnails:          config.IsWriteImageThumbnails(),
+		CreateImageClipsFromVideos:    config.IsCreateImageClipsFromVideos(),
+		GalleryCoverRegex:             config.GetGalleryCoverRegex(),
+		APIKey:                        config.GetAPIKey(),
+		Username:                      config.GetUsername(),
+		Password:                      config.GetPasswordHash(),
+		MaxSessionAge:                 config.GetMaxSessionAge(),
+		LogFile:                       &logFile,
+		LogOut:                        config.GetLogOut(),
+		LogLevel:                      config.GetLogLevel(),
+		LogAccess:                     config.GetLogAccess(),
+		LogFileMaxSize:                config.GetLogFileMaxSize(),
+		VideoExtensions:               config.GetVideoExtensions(),
+		ImageExtensions:               config.GetImageExtensions(),
+		GalleryExtensions:             config.GetGalleryExtensions(),
+		CreateGalleriesFromFolders:    config.GetCreateGalleriesFromFolders(),
+		Excludes:                      config.GetExcludes(),
+		ImageExcludes:                 config.GetImageExcludes(),
+		CustomPerformerImageLocation:  &customPerformerImageLocation,
+		StashBoxes:                    config.GetStashBoxes(),
+		PythonPath:                    config.GetPythonPath(),
+		TranscodeInputArgs:            config.GetTranscodeInputArgs(),
+		TranscodeOutputArgs:           config.GetTranscodeOutputArgs(),
+		LiveTranscodeInputArgs:        config.GetLiveTranscodeInputArgs(),
+		LiveTranscodeOutputArgs:       config.GetLiveTranscodeOutputArgs(),
+		DrawFunscriptHeatmapRange:     config.GetDrawFunscriptHeatmapRange(),
+		ScraperPackageSources:         config.GetScraperPackageSources(),
+		PluginPackageSources:          config.GetPluginPackageSources(),
 	}
 }
 
@@ -142,16 +152,20 @@ func makeConfigInterfaceResult() *ConfigInterfaceResult {
 	showStudioAsText := config.GetShowStudioAsText()
 	css := config.GetCSS()
 	cssEnabled := config.GetCSSEnabled()
+	javascript := config.GetJavascript()
+	javascriptEnabled := config.GetJavascriptEnabled()
 	customLocales := config.GetCustomLocales()
 	customLocalesEnabled := config.GetCustomLocalesEnabled()
+	disableCustomizations := config.GetDisableCustomizations()
 	language := config.GetLanguage()
 	handyKey := config.GetHandyKey()
 	scriptOffset := config.GetFunscriptOffset()
+	useStashHostedFunscript := config.GetUseStashHostedFunscript()
 	imageLightboxOptions := config.GetImageLightboxOptions()
-	// FIXME - misnamed output field means we have redundant fields
 	disableDropdownCreate := config.GetDisableDropdownCreate()
 
 	return &ConfigInterfaceResult{
+		SfwContentMode:               config.GetSFWContentMode(),
 		MenuItems:                    menuItems,
 		SoundOnPreview:               &soundOnPreview,
 		WallShowTitle:                &wallShowTitle,
@@ -166,18 +180,20 @@ func makeConfigInterfaceResult() *ConfigInterfaceResult {
 		ContinuePlaylistDefault:      &continuePlaylistDefault,
 		CSS:                          &css,
 		CSSEnabled:                   &cssEnabled,
+		Javascript:                   &javascript,
+		JavascriptEnabled:            &javascriptEnabled,
 		CustomLocales:                &customLocales,
 		CustomLocalesEnabled:         &customLocalesEnabled,
+		DisableCustomizations:        &disableCustomizations,
 		Language:                     &language,
 
 		ImageLightbox: &imageLightboxOptions,
 
-		// FIXME - see above
-		DisabledDropdownCreate: disableDropdownCreate,
-		DisableDropdownCreate:  disableDropdownCreate,
+		DisableDropdownCreate: disableDropdownCreate,
 
-		HandyKey:        &handyKey,
-		FunscriptOffset: &scriptOffset,
+		HandyKey:                &handyKey,
+		FunscriptOffset:         &scriptOffset,
+		UseStashHostedFunscript: &useStashHostedFunscript,
 	}
 }
 
@@ -187,8 +203,10 @@ func makeConfigDLNAResult() *ConfigDLNAResult {
 	return &ConfigDLNAResult{
 		ServerName:     config.GetDLNAServerName(),
 		Enabled:        config.GetDLNADefaultEnabled(),
+		Port:           config.GetDLNAPort(),
 		WhitelistedIPs: config.GetDLNADefaultIPWhitelist(),
 		Interfaces:     config.GetDLNAInterfaces(),
+		VideoSortOrder: config.GetVideoSortOrder(),
 	}
 }
 
@@ -226,7 +244,9 @@ func makeConfigUIResult() map[string]interface{} {
 }
 
 func (r *queryResolver) ValidateStashBoxCredentials(ctx context.Context, input config.StashBoxInput) (*StashBoxValidationResult, error) {
-	client := stashbox.NewClient(models.StashBox{Endpoint: input.Endpoint, APIKey: input.APIKey}, r.txnManager, r.stashboxRepository())
+	box := models.StashBox{Endpoint: input.Endpoint, APIKey: input.APIKey}
+	client := r.newStashBoxClient(box)
+
 	user, err := client.GetUser(ctx)
 
 	valid := user != nil && user.Me != nil
@@ -234,18 +254,19 @@ func (r *queryResolver) ValidateStashBoxCredentials(ctx context.Context, input c
 	if valid {
 		status = fmt.Sprintf("Successfully authenticated as %s", user.Me.Name)
 	} else {
+		errorStr := strings.ToLower(err.Error())
 		switch {
-		case strings.Contains(strings.ToLower(err.Error()), "doctype"):
+		case strings.Contains(errorStr, "doctype"):
 			// Index file returned rather than graphql
 			status = "Invalid endpoint"
-		case strings.Contains(err.Error(), "request failed"):
+		case strings.Contains(errorStr, "request failed"):
 			status = "No response from server"
-		case strings.HasPrefix(err.Error(), "invalid character") ||
-			strings.HasPrefix(err.Error(), "illegal base64 data") ||
-			err.Error() == "unexpected end of JSON input" ||
-			err.Error() == "token contains an invalid number of segments":
+		case strings.Contains(errorStr, "invalid character") ||
+			strings.Contains(errorStr, "illegal base64 data") ||
+			strings.Contains(errorStr, "unexpected end of json input") ||
+			strings.Contains(errorStr, "token contains an invalid number of segments"):
 			status = "Malformed API key."
-		case err.Error() == "" || err.Error() == "signature is invalid":
+		case strings.Contains(errorStr, "signature is invalid"):
 			status = "Invalid or expired API key."
 		default:
 			status = fmt.Sprintf("Unknown error: %s", err)

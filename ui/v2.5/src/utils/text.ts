@@ -3,20 +3,20 @@ import { IntlShape } from "react-intl";
 // Typescript currently does not implement the intl Unit interface
 type Unit =
   | "byte"
-  | "kilobyte"
-  | "megabyte"
-  | "gigabyte"
-  | "terabyte"
-  | "petabyte";
+  | "kibibyte"
+  | "mebibyte"
+  | "gibibyte"
+  | "tebibyte"
+  | "pebibyte";
 const Units: Unit[] = [
   "byte",
-  "kilobyte",
-  "megabyte",
-  "gigabyte",
-  "terabyte",
-  "petabyte",
+  "kibibyte",
+  "mebibyte",
+  "gibibyte",
+  "tebibyte",
+  "pebibyte",
 ];
-const shortUnits = ["B", "KB", "MB", "GB", "TB", "PB"];
+const shortUnits = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
 const fileSize = (bytes: number = 0) => {
   if (Number.isNaN(parseFloat(String(bytes))) || !Number.isFinite(bytes))
@@ -24,6 +24,7 @@ const fileSize = (bytes: number = 0) => {
 
   let unit = 0;
   let count = bytes;
+  // calculating base 2 units
   while (count >= 1024 && unit + 1 < Units.length) {
     count /= 1024;
     unit++;
@@ -129,16 +130,11 @@ const secondsAsTime = (seconds: number = 0): DurationCount[] => {
   return result;
 };
 
-const timeAsString = (time: DurationCount[]): string => {
-  return time.join(" ");
-};
-
 const secondsAsTimeString = (
   seconds: number = 0,
   maxUnitCount: number = 2
 ): string => {
-  const timeArray = secondsAsTime(seconds).slice(0, maxUnitCount);
-  return timeAsString(timeArray);
+  return secondsAsTime(seconds).slice(0, maxUnitCount).join(" ");
 };
 
 const formatFileSizeUnit = (u: Unit) => {
@@ -156,18 +152,102 @@ const fileSizeFractionalDigits = (unit: Unit) => {
   return 0;
 };
 
-const secondsToTimestamp = (seconds: number) => {
-  let ret = new Date(seconds * 1000).toISOString().substr(11, 8);
+// Converts seconds to a [hh:]mm:ss[.ffff] where hh is only shown if hours is non-zero,
+// and ffff is shown only if frameRate is set, and the seconds includes a fractional component.
+// A negative input will result in a -hh:mm:ss or -mm:ss output.
+const secondsToTimestamp = (secondsInput: number, includeMS?: boolean) => {
+  let neg = false;
+  if (secondsInput < 0) {
+    neg = true;
+    secondsInput = -secondsInput;
+  }
 
-  if (ret.startsWith("00")) {
-    // strip hours if under one hour
-    ret = ret.substr(3);
+  const fracSeconds = secondsInput % 1;
+  const ms = Math.round(fracSeconds * 1000);
+
+  let seconds = Math.trunc(secondsInput);
+
+  const s = seconds % 60;
+  seconds = (seconds - s) / 60;
+
+  const m = seconds % 60;
+  seconds = (seconds - m) / 60;
+
+  const h = seconds;
+
+  let ret = String(s).padStart(2, "0");
+  if (h === 0) {
+    ret = String(m) + ":" + ret;
+  } else {
+    ret = String(m).padStart(2, "0") + ":" + ret;
+    ret = String(h) + ":" + ret;
   }
-  if (ret.startsWith("0")) {
-    // for duration under a minute, leave one leading zero
-    ret = ret.substr(1);
+
+  if (includeMS && ms > 0) {
+    ret += "." + ms.toString().padStart(3, "0");
   }
-  return ret;
+
+  if (neg) {
+    return "-" + ret;
+  } else {
+    return ret;
+  }
+};
+
+const formatTimestampRange = (start: number, end: number | undefined) => {
+  if (end === undefined) {
+    return secondsToTimestamp(start);
+  }
+  return `${secondsToTimestamp(start)}-${secondsToTimestamp(end)}`;
+};
+
+const timestampToSeconds = (v: string | null | undefined) => {
+  if (!v) {
+    return null;
+  }
+
+  const splits = v.split(":");
+
+  if (splits.length > 3) {
+    return null;
+  }
+
+  let secondsPart = splits[splits.length - 1];
+  let msFrac = 0;
+  if (secondsPart.includes(".")) {
+    const secondsParts = secondsPart.split(".");
+    if (secondsParts.length !== 2) {
+      return null;
+    }
+
+    secondsPart = secondsParts[0];
+
+    const msPart = parseInt(secondsParts[1], 10);
+    if (Number.isNaN(msPart)) {
+      return null;
+    }
+
+    msFrac = msPart / 1000;
+  }
+
+  let seconds = 0;
+  let factor = 1;
+  while (splits.length > 0) {
+    const thisSplit = splits.pop();
+    if (thisSplit === undefined) {
+      return null;
+    }
+
+    const thisInt = parseInt(thisSplit, 10);
+    if (Number.isNaN(thisInt)) {
+      return null;
+    }
+
+    seconds += factor * thisInt;
+    factor *= 60;
+  }
+
+  return seconds + msFrac;
 };
 
 const fileNameFromPath = (path: string) => {
@@ -189,11 +269,77 @@ const stringToDate = (dateString: string) => {
   return new Date(year, monthIndex, day, 0, 0, 0, 0);
 };
 
+const stringToFuzzyDate = (dateString: string) => {
+  if (!dateString) return null;
+
+  const parts = dateString.split("-");
+  // Invalid date string
+  let year = Number(parts[0]);
+  if (isNaN(year)) year = new Date().getFullYear();
+  let monthIndex = 0;
+  if (parts.length > 1) {
+    monthIndex = Math.max(0, Number(parts[1]) - 1);
+    if (monthIndex > 11 || isNaN(monthIndex)) monthIndex = 0;
+  }
+  let day = 1;
+  if (parts.length > 2) {
+    day = Number(parts[2]);
+    if (day > 31 || isNaN(day)) day = 1;
+  }
+
+  return new Date(year, monthIndex, day, 0, 0, 0, 0);
+};
+
+const stringToFuzzyDateTime = (dateString: string) => {
+  if (!dateString) return null;
+
+  const dateTime = dateString.split(" ");
+
+  let date: Date | null = null;
+  if (dateTime.length > 0) {
+    date = stringToFuzzyDate(dateTime[0]);
+  }
+
+  if (!date) {
+    date = new Date();
+  }
+
+  if (dateTime.length > 1) {
+    const timeParts = dateTime[1].split(":");
+    if (date && timeParts.length > 0) {
+      date.setHours(Number(timeParts[0]));
+    }
+    if (date && timeParts.length > 1) {
+      date.setMinutes(Number(timeParts[1]));
+    }
+    if (date && timeParts.length > 2) {
+      date.setSeconds(Number(timeParts[2]));
+    }
+  }
+
+  return date;
+};
+
+function dateToString(date: Date) {
+  return `${date.getFullYear()}-${(date.getMonth() + 1)
+    .toString()
+    .padStart(2, "0")}-${date.getDate().toString().padStart(2, "0")}`;
+}
+
+function dateTimeToString(date: Date) {
+  return `${dateToString(date)} ${date
+    .getHours()
+    .toString()
+    .padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
+}
+
 const getAge = (dateString?: string | null, fromDateString?: string | null) => {
   if (!dateString) return 0;
 
-  const birthdate = stringToDate(dateString);
-  const fromDate = fromDateString ? stringToDate(fromDateString) : new Date();
+  const birthdate = stringToFuzzyDate(dateString);
+  const fromDate = fromDateString
+    ? stringToFuzzyDate(fromDateString)
+    : new Date();
 
   if (!birthdate || !fromDate) return 0;
 
@@ -216,20 +362,23 @@ const bitRate = (bitrate: number) => {
 
 const resolution = (width: number, height: number) => {
   const number = width > height ? height : width;
-  if (number >= 4320) {
+  if (number >= 6144) {
+    return "HUGE";
+  }
+  if (number >= 3840) {
     return "8K";
   }
-  if (number >= 3384) {
+  if (number >= 3584) {
+    return "7K";
+  }
+  if (number >= 3000) {
     return "6K";
   }
-  if (number >= 2880) {
+  if (number >= 2560) {
     return "5K";
   }
-  if (number >= 2160) {
-    return "4K";
-  }
   if (number >= 1920) {
-    return "1920p";
+    return "4K";
   }
   if (number >= 1440) {
     return "1440p";
@@ -257,9 +406,6 @@ const resolution = (width: number, height: number) => {
   }
 };
 
-const twitterURL = new URL("https://www.twitter.com");
-const instagramURL = new URL("https://www.instagram.com");
-
 const sanitiseURL = (url?: string, siteURL?: URL) => {
   if (!url) {
     return url;
@@ -284,9 +430,61 @@ const sanitiseURL = (url?: string, siteURL?: URL) => {
   return `https://${url}`;
 };
 
+const domainFromURL = (urlString?: string, url?: URL) => {
+  if (url) {
+    return url.hostname;
+  } else if (urlString) {
+    var urlDomain = "";
+    try {
+      var sanitizedUrl = sanitiseURL(urlString);
+      if (sanitizedUrl) {
+        urlString = sanitizedUrl;
+      }
+      urlDomain = new URL(urlString).hostname;
+    } catch {
+      urlDomain = urlString; // We cant determine the hostname so we return the base string
+    }
+    return urlDomain;
+  } else {
+    return "";
+  }
+};
+
 const formatDate = (intl: IntlShape, date?: string, utc = true) => {
   if (!date) {
     return "";
+  }
+
+  return intl.formatDate(date, {
+    format: "long",
+    timeZone: utc ? "utc" : undefined,
+  });
+};
+
+const formatFuzzyDate = (intl: IntlShape, date?: string, utc = true) => {
+  if (!date) {
+    return "";
+  }
+
+  // handle year or year/month dates
+  const yearMatch = date.match(/^(\d{4})$/);
+  if (yearMatch) {
+    const year = parseInt(yearMatch[1], 10);
+    return intl.formatDate(Date.UTC(year, 0), {
+      year: "numeric",
+      timeZone: utc ? "utc" : undefined,
+    });
+  }
+
+  const yearMonthMatch = date.match(/^(\d{4})-(\d{2})$/);
+  if (yearMonthMatch) {
+    const year = parseInt(yearMonthMatch[1], 10);
+    const month = parseInt(yearMonthMatch[2], 10) - 1;
+    return intl.formatDate(Date.UTC(year, month), {
+      year: "numeric",
+      month: "long",
+      timeZone: utc ? "utc" : undefined,
+    });
   }
 
   return intl.formatDate(date, {
@@ -299,11 +497,6 @@ const formatDateTime = (intl: IntlShape, dateTime?: string, utc = false) =>
   `${formatDate(intl, dateTime, utc)} ${intl.formatTime(dateTime, {
     timeZone: utc ? "utc" : undefined,
   })}`;
-
-const capitalize = (val: string) =>
-  val
-    .replace(/^[-_]*(.)/, (_, c) => c.toUpperCase())
-    .replace(/[-_]+(.)/g, (_, c) => ` ${c.toUpperCase()}`);
 
 type CountUnit = "" | "K" | "M" | "B";
 const CountUnits: CountUnit[] = ["", "K", "M", "B"];
@@ -328,24 +521,44 @@ const abbreviateCounter = (counter: number = 0) => {
   };
 };
 
+/*
+ * Trims quotes if the text has leading/trailing quotes
+ */
+const stripQuotes = (text: string) => {
+  if (text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1);
+  return text;
+};
+
+/*
+ * Wraps string in quotes
+ */
+const addQuotes = (text: string) => `"${text}"`;
+
 const TextUtils = {
   fileSize,
   formatFileSizeUnit,
   fileSizeFractionalDigits,
   secondsToTimestamp,
+  formatTimestampRange,
+  timestampToSeconds,
   fileNameFromPath,
   stringToDate,
+  stringToFuzzyDate,
+  stringToFuzzyDateTime,
+  dateToString,
+  dateTimeToString,
   age: getAge,
   bitRate,
   resolution,
   sanitiseURL,
-  twitterURL,
-  instagramURL,
+  domainFromURL,
   formatDate,
+  formatFuzzyDate,
   formatDateTime,
-  capitalize,
   secondsAsTimeString,
   abbreviateCounter,
+  stripQuotes,
+  addQuotes,
 };
 
 export default TextUtils;

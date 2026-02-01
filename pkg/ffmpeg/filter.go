@@ -1,6 +1,8 @@
 package ffmpeg
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // VideoFilter represents video filter parameters to be passed to ffmpeg.
 type VideoFilter string
@@ -55,6 +57,30 @@ func (f VideoFilter) ScaleMax(inputWidth, inputHeight, maxSize int) VideoFilter 
 	}
 
 	return f.ScaleDimensions(maxSize, -2)
+}
+
+// ScaleMaxLM scales an image to fit within specified maximum dimensions while maintaining its aspect ratio.
+func (f VideoFilter) ScaleMaxLM(width int, height int, reqHeight int, maxWidth int, maxHeight int) VideoFilter {
+	if maxWidth == 0 || maxHeight == 0 {
+		return f.ScaleMax(width, height, reqHeight)
+	}
+
+	aspectRatio := float64(width) / float64(height)
+	desiredHeight := reqHeight
+	if desiredHeight == 0 {
+		desiredHeight = height
+	}
+	desiredWidth := int(float64(desiredHeight) * aspectRatio)
+
+	if desiredHeight <= maxHeight && desiredWidth <= maxWidth {
+		return f.ScaleMax(width, height, reqHeight)
+	}
+
+	if float64(desiredHeight-maxHeight) > float64(desiredWidth-maxWidth) {
+		return f.ScaleDimensions(-2, maxHeight)
+	} else {
+		return f.ScaleDimensions(maxWidth, -2)
+	}
 }
 
 // Fps returns a VideoFilter setting the frames per second.

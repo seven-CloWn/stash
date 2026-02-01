@@ -3,38 +3,40 @@ package identify
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/stashapp/stash/pkg/logger"
 	"github.com/stashapp/stash/pkg/models"
-	"github.com/stashapp/stash/pkg/scene"
 	"github.com/stashapp/stash/pkg/sliceutil"
-	"github.com/stashapp/stash/pkg/sliceutil/intslice"
 	"github.com/stashapp/stash/pkg/utils"
 )
 
-type SceneReaderUpdater interface {
+type SceneCoverGetter interface {
 	GetCover(ctx context.Context, sceneID int) ([]byte, error)
-	scene.Updater
+}
+
+type SceneReaderUpdater interface {
+	SceneCoverGetter
+	models.SceneUpdater
 	models.PerformerIDLoader
 	models.TagIDLoader
 	models.StashIDLoader
-}
-
-type TagCreator interface {
-	Create(ctx context.Context, newTag models.Tag) (*models.Tag, error)
+	models.URLLoader
 }
 
 type sceneRelationships struct {
-	sceneReader      SceneReaderUpdater
-	studioCreator    StudioCreator
-	performerCreator PerformerCreator
-	tagCreator       TagCreator
-	scene            *models.Scene
-	result           *scrapeResult
-	fieldOptions     map[string]*FieldOptions
+	sceneReader              SceneCoverGetter
+	studioReaderWriter       models.StudioReaderWriter
+	performerCreator         PerformerCreator
+	tagCreator               models.TagCreator
+	scene                    *models.Scene
+	result                   *scrapeResult
+	fieldOptions             map[string]*FieldOptions
+	skipSingleNamePerformers bool
 }
 
 func (g sceneRelationships) studio(ctx context.Context) (*int, error) {
@@ -61,7 +63,7 @@ func (g sceneRelationships) studio(ctx context.Context) (*int, error) {
 			return &studioID, nil
 		}
 	} else if createMissing {
-		return createMissingStudio(ctx, endpoint, g.studioCreator, scraped)
+		return createMissingStudio(ctx, endpoint, g.studioReaderWriter, scraped)
 	}
 
 	return nil, nil
@@ -92,26 +94,38 @@ func (g sceneRelationships) performers(ctx context.Context, ignoreMale bool) ([]
 		performerIDs = originalPerformerIDs
 	}
 
+	singleNamePerformerSkipped := false
+
 	for _, p := range scraped {
 		if ignoreMale && p.Gender != nil && strings.EqualFold(*p.Gender, models.GenderEnumMale.String()) {
 			continue
 		}
 
-		performerID, err := getPerformerID(ctx, endpoint, g.performerCreator, p, createMissing)
+		performerID, err := getPerformerID(ctx, endpoint, g.performerCreator, p, createMissing, g.skipSingleNamePerformers)
 		if err != nil {
+			if errors.Is(err, ErrSkipSingleNamePerformer) {
+				singleNamePerformerSkipped = true
+				continue
+			}
 			return nil, err
 		}
 
 		if performerID != nil {
-			performerIDs = intslice.IntAppendUnique(performerIDs, *performerID)
+			performerIDs = sliceutil.AppendUnique(performerIDs, *performerID)
 		}
 	}
 
 	// don't return if nothing was added
 	if sliceutil.SliceSame(originalPerformerIDs, performerIDs) {
+		if singleNamePerformerSkipped {
+			return nil, ErrSkipSingleNamePerformer
+		}
 		return nil, nil
 	}
 
+	if singleNamePerformerSkipped {
+		return performerIDs, ErrSkipSingleNamePerformer
+	}
 	return performerIDs, nil
 }
 
@@ -139,6 +153,8 @@ func (g sceneRelationships) tags(ctx context.Context) ([]int, error) {
 		tagIDs = originalTagIDs
 	}
 
+	endpoint := g.result.source.RemoteSite
+
 	for _, t := range scraped {
 		if t.StoredID != nil {
 			// existing tag, just add it
@@ -147,19 +163,16 @@ func (g sceneRelationships) tags(ctx context.Context) ([]int, error) {
 				return nil, fmt.Errorf("error converting tag ID %s: %w", *t.StoredID, err)
 			}
 
-			tagIDs = intslice.IntAppendUnique(tagIDs, int(tagID))
+			tagIDs = sliceutil.AppendUnique(tagIDs, int(tagID))
 		} else if createMissing {
-			now := time.Now()
-			created, err := g.tagCreator.Create(ctx, models.Tag{
-				Name:      t.Name,
-				CreatedAt: models.SQLiteTimestamp{Timestamp: now},
-				UpdatedAt: models.SQLiteTimestamp{Timestamp: now},
-			})
+			newTag := t.ToTag(endpoint, nil)
+
+			err := g.tagCreator.Create(ctx, newTag)
 			if err != nil {
 				return nil, fmt.Errorf("error creating tag: %w", err)
 			}
 
-			tagIDs = append(tagIDs, created.ID)
+			tagIDs = append(tagIDs, newTag.ID)
 		}
 	}
 
@@ -171,7 +184,13 @@ func (g sceneRelationships) tags(ctx context.Context) ([]int, error) {
 	return tagIDs, nil
 }
 
-func (g sceneRelationships) stashIDs(ctx context.Context) ([]models.StashID, error) {
+// stashIDs returns the updated stash IDs for the scene
+// returns nil if not applicable or no changes were made
+// if setUpdateTime is true, then the updated_at field will be set to the current time
+// for the applicable matching stash ID
+func (g sceneRelationships) stashIDs(ctx context.Context, setUpdateTime bool) ([]models.StashID, error) {
+	updateTime := time.Now()
+
 	remoteSiteID := g.result.result.RemoteSiteID
 	fieldStrategy := g.fieldOptions["stash_ids"]
 	target := g.scene
@@ -188,7 +207,7 @@ func (g sceneRelationships) stashIDs(ctx context.Context) ([]models.StashID, err
 		strategy = fieldStrategy.Strategy
 	}
 
-	var stashIDs []models.StashID
+	var stashIDs models.StashIDs
 	originalStashIDs := target.StashIDs.List()
 
 	if strategy == FieldStrategyMerge {
@@ -197,15 +216,17 @@ func (g sceneRelationships) stashIDs(ctx context.Context) ([]models.StashID, err
 		stashIDs = append(stashIDs, originalStashIDs...)
 	}
 
+	// find and update the stash id if it exists
 	for i, stashID := range stashIDs {
 		if endpoint == stashID.Endpoint {
 			// if stashID is the same, then don't set
-			if stashID.StashID == *remoteSiteID {
+			if !setUpdateTime && stashID.StashID == *remoteSiteID {
 				return nil, nil
 			}
 
 			// replace the stash id and return
 			stashID.StashID = *remoteSiteID
+			stashID.UpdatedAt = updateTime
 			stashIDs[i] = stashID
 			return stashIDs, nil
 		}
@@ -213,11 +234,14 @@ func (g sceneRelationships) stashIDs(ctx context.Context) ([]models.StashID, err
 
 	// not found, create new entry
 	stashIDs = append(stashIDs, models.StashID{
-		StashID:  *remoteSiteID,
-		Endpoint: endpoint,
+		StashID:   *remoteSiteID,
+		Endpoint:  endpoint,
+		UpdatedAt: updateTime,
 	})
 
-	if sliceutil.SliceSame(originalStashIDs, stashIDs) {
+	// don't return if nothing was changed
+	// if we're setting update time, then we always return
+	if !setUpdateTime && stashIDs.HasSameStashIDs(originalStashIDs) {
 		return nil, nil
 	}
 
@@ -227,14 +251,14 @@ func (g sceneRelationships) stashIDs(ctx context.Context) ([]models.StashID, err
 func (g sceneRelationships) cover(ctx context.Context) ([]byte, error) {
 	scraped := g.result.result.Image
 
-	if scraped == nil {
+	if scraped == nil || *scraped == "" {
 		return nil, nil
 	}
 
 	// always overwrite if present
 	existingCover, err := g.sceneReader.GetCover(ctx, g.scene.ID)
 	if err != nil {
-		return nil, fmt.Errorf("error getting scene cover: %w", err)
+		logger.Errorf("Error getting scene cover: %v", err)
 	}
 
 	data, err := utils.ProcessImageInput(ctx, *scraped)

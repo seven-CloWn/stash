@@ -7,17 +7,22 @@ import {
   mutateBackupDatabase,
   mutateMetadataImport,
   mutateMetadataClean,
+  mutateAnonymiseDatabase,
+  mutateMigrateSceneScreenshots,
+  mutateMigrateBlobs,
+  mutateOptimiseDatabase,
+  mutateCleanGenerated,
 } from "src/core/StashService";
-import { useToast } from "src/hooks";
-import { downloadFile } from "src/utils";
-import { Modal } from "../../Shared";
+import { useToast } from "src/hooks/Toast";
+import downloadFile from "src/utils/download";
+import { ModalComponent } from "src/components/Shared/Modal";
 import { ImportDialog } from "./ImportDialog";
 import * as GQL from "src/core/generated-graphql";
 import { SettingSection } from "../SettingSection";
 import { BooleanSetting, Setting } from "../Inputs";
 import { ManualLink } from "src/components/Help/context";
-import { Icon } from "src/components/Shared";
-import { ConfigurationContext } from "src/hooks/Config";
+import { Icon } from "src/components/Shared/Icon";
+import { useConfigurationContext } from "src/hooks/Config";
 import { FolderSelect } from "src/components/Shared/FolderSelect/FolderSelect";
 import {
   faMinus,
@@ -25,6 +30,7 @@ import {
   faQuestionCircle,
   faTrashAlt,
 } from "@fortawesome/free-solid-svg-icons";
+import { CleanGeneratedDialog } from "./CleanGeneratedDialog";
 
 interface ICleanDialog {
   pathSelection?: boolean;
@@ -38,7 +44,7 @@ const CleanDialog: React.FC<ICleanDialog> = ({
   onClose,
 }) => {
   const intl = useIntl();
-  const { configuration } = React.useContext(ConfigurationContext);
+  const { configuration } = useConfigurationContext();
 
   const libraryPaths = configuration?.general.stashes.map((s) => s.path);
 
@@ -67,7 +73,7 @@ const CleanDialog: React.FC<ICleanDialog> = ({
   }
 
   return (
-    <Modal
+    <ModalComponent
       show
       icon={faTrashAlt}
       disabled={pathSelection && paths.length === 0}
@@ -102,7 +108,7 @@ const CleanDialog: React.FC<ICleanDialog> = ({
           {pathSelection ? (
             <FolderSelect
               currentDirectory={currentDirectory}
-              setCurrentDirectory={(v) => setCurrentDirectory(v)}
+              onChangeDirectory={setCurrentDirectory}
               defaultDirectories={libraryPaths}
               appendButton={
                 <Button
@@ -118,7 +124,7 @@ const CleanDialog: React.FC<ICleanDialog> = ({
 
         {msg}
       </div>
-    </Modal>
+    </ModalComponent>
   );
 };
 
@@ -149,10 +155,12 @@ const CleanOptions: React.FC<ICleanOptions> = ({
 
 interface IDataManagementTasks {
   setIsBackupRunning: (v: boolean) => void;
+  setIsAnonymiseRunning: (v: boolean) => void;
 }
 
 export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
   setIsBackupRunning,
+  setIsAnonymiseRunning,
 }) => {
   const intl = useIntl();
   const Toast = useToast();
@@ -161,11 +169,23 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
     import: false,
     clean: false,
     cleanAlert: false,
+    cleanGenerated: false,
   });
 
   const [cleanOptions, setCleanOptions] = useState<GQL.CleanMetadataInput>({
     dryRun: false,
   });
+
+  const [migrateBlobsOptions, setMigrateBlobsOptions] =
+    useState<GQL.MigrateBlobsInput>({
+      deleteOld: true,
+    });
+
+  const [migrateSceneScreenshotsOptions, setMigrateSceneScreenshotsOptions] =
+    useState<GQL.MigrateSceneScreenshotsInput>({
+      deleteFiles: false,
+      overwriteExisting: false,
+    });
 
   type DialogOpenState = typeof dialogOpen;
 
@@ -179,12 +199,12 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
     setDialogOpen({ importAlert: false });
     try {
       await mutateMetadataImport();
-      Toast.success({
-        content: intl.formatMessage(
+      Toast.success(
+        intl.formatMessage(
           { id: "config.tasks.added_job_to_queue" },
           { operation_name: intl.formatMessage({ id: "actions.import" }) }
-        ),
-      });
+        )
+      );
     } catch (e) {
       Toast.error(e);
     }
@@ -192,7 +212,7 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
 
   function renderImportAlert() {
     return (
-      <Modal
+      <ModalComponent
         show={dialogOpen.importAlert}
         icon={faTrashAlt}
         accept={{
@@ -203,7 +223,7 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
         cancel={{ onClick: () => setDialogOpen({ importAlert: false }) }}
       >
         <p>{intl.formatMessage({ id: "actions.tasks.import_warning" })}</p>
-      </Modal>
+      </ModalComponent>
     );
   }
 
@@ -222,12 +242,12 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
         paths,
       });
 
-      Toast.success({
-        content: intl.formatMessage(
+      Toast.success(
+        intl.formatMessage(
           { id: "config.tasks.added_job_to_queue" },
           { operation_name: intl.formatMessage({ id: "actions.clean" }) }
-        ),
-      });
+        )
+      );
     } catch (e) {
       Toast.error(e);
     } finally {
@@ -235,19 +255,76 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
     }
   }
 
+  async function onCleanGenerated(options: GQL.CleanGeneratedInput) {
+    try {
+      await mutateCleanGenerated({
+        ...options,
+      });
+
+      Toast.success(
+        intl.formatMessage(
+          { id: "config.tasks.added_job_to_queue" },
+          {
+            operation_name: intl.formatMessage({
+              id: "actions.clean_generated",
+            }),
+          }
+        )
+      );
+    } catch (e) {
+      Toast.error(e);
+    }
+  }
+
   async function onMigrateHashNaming() {
     try {
       await mutateMigrateHashNaming();
-      Toast.success({
-        content: intl.formatMessage(
+      Toast.success(
+        intl.formatMessage(
           { id: "config.tasks.added_job_to_queue" },
           {
             operation_name: intl.formatMessage({
               id: "actions.hash_migration",
             }),
           }
-        ),
-      });
+        )
+      );
+    } catch (err) {
+      Toast.error(err);
+    }
+  }
+
+  async function onMigrateSceneScreenshots() {
+    try {
+      await mutateMigrateSceneScreenshots(migrateSceneScreenshotsOptions);
+      Toast.success(
+        intl.formatMessage(
+          { id: "config.tasks.added_job_to_queue" },
+          {
+            operation_name: intl.formatMessage({
+              id: "actions.migrate_scene_screenshots",
+            }),
+          }
+        )
+      );
+    } catch (err) {
+      Toast.error(err);
+    }
+  }
+
+  async function onMigrateBlobs() {
+    try {
+      await mutateMigrateBlobs(migrateBlobsOptions);
+      Toast.success(
+        intl.formatMessage(
+          { id: "config.tasks.added_job_to_queue" },
+          {
+            operation_name: intl.formatMessage({
+              id: "actions.migrate_blobs",
+            }),
+          }
+        )
+      );
     } catch (err) {
       Toast.error(err);
     }
@@ -256,12 +333,12 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
   async function onExport() {
     try {
       await mutateMetadataExport();
-      Toast.success({
-        content: intl.formatMessage(
+      Toast.success(
+        intl.formatMessage(
           { id: "config.tasks.added_job_to_queue" },
-          { operation_name: intl.formatMessage({ id: "actions.backup" }) }
-        ),
-      });
+          { operation_name: intl.formatMessage({ id: "actions.export" }) }
+        )
+      );
     } catch (err) {
       Toast.error(err);
     }
@@ -283,6 +360,43 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
       Toast.error(e);
     } finally {
       setIsBackupRunning(false);
+    }
+  }
+
+  async function onOptimiseDatabase() {
+    try {
+      await mutateOptimiseDatabase();
+      Toast.success(
+        intl.formatMessage(
+          { id: "config.tasks.added_job_to_queue" },
+          {
+            operation_name: intl.formatMessage({
+              id: "actions.optimise_database",
+            }),
+          }
+        )
+      );
+    } catch (e) {
+      Toast.error(e);
+    }
+  }
+
+  async function onAnonymise(download?: boolean) {
+    try {
+      setIsAnonymiseRunning(true);
+      const ret = await mutateAnonymiseDatabase({
+        download,
+      });
+
+      // download the result
+      if (download && ret.data && ret.data.anonymiseDatabase) {
+        const link = ret.data.anonymiseDatabase;
+        downloadFile(link);
+      }
+    } catch (e) {
+      Toast.error(e);
+    } finally {
+      setIsAnonymiseRunning(false);
     }
   }
 
@@ -313,6 +427,17 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
         />
       ) : (
         dialogOpen.clean
+      )}
+      {dialogOpen.cleanGenerated && (
+        <CleanGeneratedDialog
+          onClose={(options) => {
+            if (options) {
+              onCleanGenerated(options);
+            }
+
+            setDialogOpen({ cleanGenerated: false });
+          }}
+        />
       )}
 
       <SettingSection headingID="config.tasks.maintenance">
@@ -348,6 +473,40 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
             setOptions={(o) => setCleanOptions(o)}
           />
         </div>
+
+        <div className="setting-group">
+          <Setting
+            heading={<FormattedMessage id="actions.clean_generated" />}
+            subHeadingID="config.tasks.clean_generated.description"
+          >
+            <Button
+              variant="danger"
+              type="submit"
+              onClick={() => setDialogOpen({ cleanGenerated: true })}
+            >
+              <FormattedMessage id="actions.clean_generated" />…
+            </Button>
+          </Setting>
+        </div>
+
+        <Setting
+          headingID="actions.optimise_database"
+          subHeading={
+            <>
+              <FormattedMessage id="config.tasks.optimise_database" />
+              <br />
+              <FormattedMessage id="config.tasks.optimise_database_warning" />
+            </>
+          }
+        >
+          <Button
+            id="optimiseDatabase"
+            variant="danger"
+            onClick={() => onOptimiseDatabase()}
+          >
+            <FormattedMessage id="actions.optimise_database" />
+          </Button>
+        </Setting>
       </SettingSection>
 
       <SettingSection headingID="metadata">
@@ -433,8 +592,48 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
         </Setting>
       </SettingSection>
 
+      <SettingSection headingID="actions.anonymise">
+        <Setting
+          headingID="actions.anonymise"
+          subHeading={intl.formatMessage(
+            { id: "config.tasks.anonymise_database" },
+            {
+              filename_format: (
+                <code>
+                  [origFilename].anonymous.sqlite.[schemaVersion].[YYYYMMDD_HHMMSS]
+                </code>
+              ),
+            }
+          )}
+        >
+          <Button
+            id="anonymise"
+            variant="secondary"
+            type="submit"
+            onClick={() => onAnonymise()}
+          >
+            <FormattedMessage id="actions.anonymise" />
+          </Button>
+        </Setting>
+
+        <Setting
+          headingID="actions.download_anonymised"
+          subHeadingID="config.tasks.anonymise_and_download"
+        >
+          <Button
+            id="anonymiseDownload"
+            variant="secondary"
+            type="submit"
+            onClick={() => onAnonymise(true)}
+          >
+            <FormattedMessage id="actions.download_anonymised" />
+          </Button>
+        </Setting>
+      </SettingSection>
+
       <SettingSection headingID="config.tasks.migrations">
         <Setting
+          advanced
           headingID="actions.rename_gen_files"
           subHeadingID="config.tasks.migrate_hash_files"
         >
@@ -446,6 +645,69 @@ export const DataManagementTasks: React.FC<IDataManagementTasks> = ({
             <FormattedMessage id="actions.rename_gen_files" />
           </Button>
         </Setting>
+
+        <div className="setting-group">
+          <Setting
+            headingID="actions.migrate_blobs"
+            subHeadingID="config.tasks.migrate_blobs.description"
+          >
+            <Button
+              id="migrateBlobs"
+              variant="danger"
+              onClick={() => onMigrateBlobs()}
+            >
+              <FormattedMessage id="actions.migrate_blobs" />
+            </Button>
+          </Setting>
+
+          <BooleanSetting
+            id="migrate-blobs-delete-old"
+            checked={migrateBlobsOptions.deleteOld ?? false}
+            headingID="config.tasks.migrate_blobs.delete_old"
+            onChange={(v) =>
+              setMigrateBlobsOptions({ ...migrateBlobsOptions, deleteOld: v })
+            }
+          />
+        </div>
+
+        <div className="setting-group">
+          <Setting
+            headingID="actions.migrate_scene_screenshots"
+            subHeadingID="config.tasks.migrate_scene_screenshots.description"
+          >
+            <Button
+              id="migrateSceneScreenshots"
+              variant="danger"
+              onClick={() => onMigrateSceneScreenshots()}
+            >
+              <FormattedMessage id="actions.migrate_scene_screenshots" />
+            </Button>
+          </Setting>
+
+          <BooleanSetting
+            id="migrate-scene-screenshots-overwrite-existing"
+            checked={migrateSceneScreenshotsOptions.overwriteExisting ?? false}
+            headingID="config.tasks.migrate_scene_screenshots.overwrite_existing"
+            onChange={(v) =>
+              setMigrateSceneScreenshotsOptions({
+                ...migrateSceneScreenshotsOptions,
+                overwriteExisting: v,
+              })
+            }
+          />
+
+          <BooleanSetting
+            id="migrate-scene-screenshots-delete-files"
+            checked={migrateSceneScreenshotsOptions.deleteFiles ?? false}
+            headingID="config.tasks.migrate_scene_screenshots.delete_files"
+            onChange={(v) =>
+              setMigrateSceneScreenshotsOptions({
+                ...migrateSceneScreenshotsOptions,
+                deleteFiles: v,
+              })
+            }
+          />
+        </div>
       </SettingSection>
     </Form.Group>
   );

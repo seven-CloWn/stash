@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/stashapp/stash/pkg/models"
 )
 
 // Modified from github.com/facebookgo/symwalk
@@ -48,7 +50,7 @@ import (
 //
 // Note that symwalk.Walk does not terminate if there are any non-terminating loops in
 // the file structure.
-func walkSym(f FS, filename string, linkDirname string, walkFn fs.WalkDirFunc) error {
+func walkSym(f models.FS, filename string, linkDirname string, walkFn fs.WalkDirFunc) error {
 	symWalkFunc := func(path string, info fs.DirEntry, err error) error {
 
 		if fname, err := filepath.Rel(filename, path); err == nil {
@@ -79,8 +81,8 @@ func walkSym(f FS, filename string, linkDirname string, walkFn fs.WalkDirFunc) e
 	return fsWalk(f, filename, symWalkFunc)
 }
 
-// symWalk extends filepath.Walk to also follow symlinks
-func symWalk(fs FS, path string, walkFn fs.WalkDirFunc) error {
+// SymWalk extends filepath.Walk to also follow symlinks
+func SymWalk(fs models.FS, path string, walkFn fs.WalkDirFunc) error {
 	return walkSym(fs, path, path, walkFn)
 }
 
@@ -93,7 +95,7 @@ func (d *statDirEntry) IsDir() bool                { return d.info.IsDir() }
 func (d *statDirEntry) Type() fs.FileMode          { return d.info.Mode().Type() }
 func (d *statDirEntry) Info() (fs.FileInfo, error) { return d.info, nil }
 
-func fsWalk(f FS, root string, fn fs.WalkDirFunc) error {
+func fsWalk(f models.FS, root string, fn fs.WalkDirFunc) error {
 	info, err := f.Lstat(root)
 	if err != nil {
 		err = fn(root, nil, err)
@@ -106,7 +108,7 @@ func fsWalk(f FS, root string, fn fs.WalkDirFunc) error {
 	return err
 }
 
-func walkDir(f FS, path string, d fs.DirEntry, walkDirFn fs.WalkDirFunc) error {
+func walkDir(f models.FS, path string, d fs.DirEntry, walkDirFn fs.WalkDirFunc) error {
 	if err := walkDirFn(path, d, nil); err != nil || !d.IsDir() {
 		if errors.Is(err, fs.SkipDir) && d.IsDir() {
 			// Successfully skipped directory.
@@ -125,7 +127,12 @@ func walkDir(f FS, path string, d fs.DirEntry, walkDirFn fs.WalkDirFunc) error {
 	}
 
 	for _, d1 := range dirs {
-		path1 := filepath.Join(path, d1.Name())
+		name := d1.Name()
+		// Prevent infinite loops; this can happen with certain FS implementations (e.g. ZipFS).
+		if name == "" || name == "." {
+			continue
+		}
+		path1 := filepath.Join(path, name)
 		if err := walkDir(f, path1, d1, walkDirFn); err != nil {
 			if errors.Is(err, fs.SkipDir) {
 				break
@@ -138,7 +145,7 @@ func walkDir(f FS, path string, d fs.DirEntry, walkDirFn fs.WalkDirFunc) error {
 
 // readDir reads the directory named by dirname and returns
 // a sorted list of directory entries.
-func readDir(fs FS, dirname string) ([]fs.DirEntry, error) {
+func readDir(fs models.FS, dirname string) ([]fs.DirEntry, error) {
 	f, err := fs.Open(dirname)
 	if err != nil {
 		return nil, err

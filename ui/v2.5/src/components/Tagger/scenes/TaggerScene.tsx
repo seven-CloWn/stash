@@ -1,21 +1,26 @@
 import React, { useState, useContext, PropsWithChildren, useMemo } from "react";
 import * as GQL from "src/core/generated-graphql";
-import { Link } from "react-router-dom";
+import { Link, useHistory } from "react-router-dom";
 import { Button, Collapse, Form, InputGroup } from "react-bootstrap";
 import { FormattedMessage } from "react-intl";
 
 import { sortPerformers } from "src/core/performers";
-import {
-  Icon,
-  OperationButton,
-  TagLink,
-  TruncatedText,
-} from "src/components/Shared";
+import { Icon } from "src/components/Shared/Icon";
+import { OperationButton } from "src/components/Shared/OperationButton";
+import { StashIDPill } from "src/components/Shared/StashID";
+import { PerformerLink, TagLink } from "src/components/Shared/TagLink";
+import { TruncatedText } from "src/components/Shared/TruncatedText";
 import { parsePath, prepareQueryString } from "src/components/Tagger/utils";
 import { ScenePreview } from "src/components/Scenes/SceneCard";
 import { TaggerStateContext } from "../context";
-import { faChevronDown, faChevronUp } from "@fortawesome/free-solid-svg-icons";
+import {
+  faChevronDown,
+  faChevronUp,
+  faImage,
+} from "@fortawesome/free-solid-svg-icons";
 import { objectPath, objectTitle } from "src/core/files";
+import { useConfigurationContext } from "src/hooks/Config";
+import { SceneQueue } from "src/models/sceneQueue";
 
 interface ITaggerSceneDetails {
   scene: GQL.SlimSceneDataFragment;
@@ -47,12 +52,13 @@ const TaggerSceneDetails: React.FC<ITaggerSceneDetails> = ({ scene }) => {
                     className="performer-tag col m-auto zoom-2"
                   >
                     <img
+                      loading="lazy"
                       className="image-thumbnail"
                       alt={performer.name ?? ""}
                       src={performer.image_path ?? ""}
                     />
                   </Link>
-                  <TagLink
+                  <PerformerLink
                     key={performer.id}
                     performer={performer}
                     className="d-block"
@@ -79,6 +85,27 @@ const TaggerSceneDetails: React.FC<ITaggerSceneDetails> = ({ scene }) => {
   );
 };
 
+type StashID = Pick<GQL.StashId, "endpoint" | "stash_id">;
+
+const StashIDs: React.FC<{ stashIDs: StashID[] }> = ({ stashIDs }) => {
+  if (!stashIDs.length) {
+    return null;
+  }
+
+  const stashLinks = stashIDs.map((stashID) => {
+    const base = stashID.endpoint.match(/https?:\/\/.*?\//)?.[0];
+    const link = base ? (
+      <StashIDPill stashID={stashID} linkType="scenes" />
+    ) : (
+      <span className="small">{stashID.stash_id}</span>
+    );
+
+    return <div key={stashID.stash_id}>{link}</div>;
+  });
+
+  return <div className="mt-2 sub-content text-right">{stashLinks}</div>;
+};
+
 interface ITaggerScene {
   scene: GQL.SlimSceneDataFragment;
   url: string;
@@ -86,6 +113,11 @@ interface ITaggerScene {
   doSceneQuery?: (queryString: string) => void;
   scrapeSceneFragment?: (scene: GQL.SlimSceneDataFragment) => void;
   loading?: boolean;
+  showLightboxImage: (imagePath: string) => void;
+  queue?: SceneQueue;
+  index?: number;
+  selected?: boolean;
+  onSelectedChanged?: (selected: boolean, shiftKey: boolean) => void;
 }
 
 export const TaggerScene: React.FC<PropsWithChildren<ITaggerScene>> = ({
@@ -96,6 +128,11 @@ export const TaggerScene: React.FC<PropsWithChildren<ITaggerScene>> = ({
   scrapeSceneFragment,
   errorMessage,
   children,
+  showLightboxImage,
+  queue,
+  index,
+  selected,
+  onSelectedChanged,
 }) => {
   const { config } = useContext(TaggerStateContext);
   const [queryString, setQueryString] = useState<string>("");
@@ -118,6 +155,11 @@ export const TaggerScene: React.FC<PropsWithChildren<ITaggerScene>> = ({
   const width = file?.width ? file.width : 0;
   const height = file?.height ? file.height : 0;
   const isPortrait = height > width;
+
+  const history = useHistory();
+
+  const { configuration } = useConfigurationContext();
+  const cont = configuration?.interface.continuePlaylistDefault ?? false;
 
   async function query() {
     if (!doSceneQuery) return;
@@ -164,34 +206,61 @@ export const TaggerScene: React.FC<PropsWithChildren<ITaggerScene>> = ({
     );
   }
 
-  function maybeRenderStashLinks() {
-    if (scene.stash_ids.length > 0) {
-      const stashLinks = scene.stash_ids.map((stashID) => {
-        const base = stashID.endpoint.match(/https?:\/\/.*?\//)?.[0];
-        const link = base ? (
-          <a
-            key={`${stashID.endpoint}${stashID.stash_id}`}
-            className="small d-block"
-            href={`${base}scenes/${stashID.stash_id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {stashID.stash_id}
-          </a>
-        ) : (
-          <div className="small">{stashID.stash_id}</div>
-        );
+  function onSpriteClick(ev: React.MouseEvent<HTMLElement>) {
+    ev.preventDefault();
+    showLightboxImage(scene.paths.sprite ?? "");
+  }
 
-        return link;
-      });
-      return <div className="mt-2 sub-content text-right">{stashLinks}</div>;
+  function maybeRenderSpriteIcon() {
+    // If a scene doesn't have any files, or doesn't have a sprite generated, the
+    // path will be http://localhost:9999/scene/_sprite.jpg
+    if (scene.files.length > 0) {
+      return (
+        <Button
+          className="sprite-button"
+          variant="link"
+          onClick={onSpriteClick}
+        >
+          <Icon icon={faImage} />
+        </Button>
+      );
     }
   }
+
+  function onScrubberClick(timestamp: number) {
+    const link = queue
+      ? queue.makeLink(scene.id, {
+          sceneIndex: index,
+          continue: cont,
+          start: timestamp,
+        })
+      : `/scenes/${scene.id}?t=${timestamp}`;
+
+    history.push(link);
+  }
+
+  let shiftKey = false;
 
   return (
     <div key={scene.id} className="mt-3 search-item">
       <div className="row">
-        <div className="col col-lg-6 overflow-hidden align-items-center d-flex flex-column flex-sm-row">
+        {onSelectedChanged && (
+          <div className="col-auto d-flex align-items-start pt-2 pr-2">
+            <Form.Control
+              type="checkbox"
+              className="search-item-check mousetrap"
+              checked={selected}
+              onChange={() => onSelectedChanged(!selected, shiftKey)}
+              onClick={(
+                event: React.MouseEvent<HTMLInputElement, MouseEvent>
+              ) => {
+                shiftKey = event.shiftKey;
+                event.stopPropagation();
+              }}
+            />
+          </div>
+        )}
+        <div className="col-12 col-lg overflow-hidden align-items-center d-flex flex-column flex-sm-row">
           <div className="scene-card mr-3">
             <Link to={url}>
               <ScenePreview
@@ -199,14 +268,17 @@ export const TaggerScene: React.FC<PropsWithChildren<ITaggerScene>> = ({
                 video={scene.paths.preview ?? undefined}
                 isPortrait={isPortrait}
                 soundActive={false}
+                vttPath={scene.paths.vtt ?? undefined}
+                onScrubberClick={onScrubberClick}
               />
+              {maybeRenderSpriteIcon()}
             </Link>
           </div>
           <Link to={url} className="scene-link overflow-hidden">
             <TruncatedText text={objectTitle(scene)} lineCount={2} />
           </Link>
         </div>
-        <div className="col-md-6 my-1">
+        <div className="col-12 col-lg my-1">
           <div>
             {renderQueryForm()}
             {scrapeSceneFragment ? (
@@ -225,7 +297,7 @@ export const TaggerScene: React.FC<PropsWithChildren<ITaggerScene>> = ({
           {errorMessage ? (
             <div className="text-danger font-weight-bold">{errorMessage}</div>
           ) : undefined}
-          {maybeRenderStashLinks()}
+          <StashIDs stashIDs={scene.stash_ids} />
         </div>
         <TaggerSceneDetails scene={scene} />
       </div>
